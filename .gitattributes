@@ -1,0 +1,6 @@
+# Files run or read on the Linux VPS, or built on a Mac, keep Unix line endings whatever the checkout platform.
+*.sh                       text eol=lf
+deployment/vps/*.service   text eol=lf
+deployment/vps/*.conf      text eol=lf
+deployment/vps/*.template  text eol=lf
+deployment/macos/*.spec      text eol=lf

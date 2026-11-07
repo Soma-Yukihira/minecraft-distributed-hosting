@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdh-server"
+version = "0.11.0"
+description = "Minecraft Distributed Hosting - VPS control plane"
+requires-python = ">=3.12"
+dependencies = [
+    "mdh-shared",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30",
+    "argon2-cffi>=23.1",
+    "zstandard>=0.22",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-timeout>=2.3", "hypothesis>=6.100", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+include = ["mdh_server*"]
+
+[tool.setuptools.package-data]
+"mdh_server.database" = ["*.sql"]

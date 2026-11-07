@@ -1,0 +1,42 @@
+# Build the Mac application (Apple chips) on a GitHub Mac, so that every version is published for
+# Windows and Mac together without owning a Mac (docs/DEPLOYMENT.md, section 5 bis).
+#
+# Started by hand (Actions > "Application Mac" > Run workflow) or by pushing a tag vX.Y.Z.
+# Result: the artifact "mac-X.Y.Z" with the .zip (updates) and the .dmg (first installation).
+# Nothing is signed here: the update key never leaves the Windows PC. There:
+#   gh run download --name mac-X.Y.Z --dir dist\macos
+#   powershell -ExecutionPolicy Bypass -File deployment\windows\build.ps1 -Notes "..."
+name: Application Mac
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple chip (M1), like the Macs the application is made for
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Version
+        id: version
+        run: echo "version=$(python -c 'import sys; sys.path.insert(0, "shared"); import mdh_shared; print(mdh_shared.__version__)')" >> "$GITHUB_OUTPUT"
+      - name: Build the application
+        env:
+          PYTHON: python
+        run: bash deployment/macos/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ steps.version.outputs.version }}
+          path: |
+            dist/macos/*.zip
+            dist/macos/*.dmg
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdh-client"
+version = "0.11.0"
+description = "Minecraft Distributed Hosting - Windows host client"
+requires-python = ">=3.12"
+dependencies = [
+    "mdh-shared",
+    "PySide6>=6.7",
+    "httpx>=0.27",
+    "websockets>=13",
+    "psutil>=5.9",
+    "zstandard>=0.22",
+    "cryptography>=43",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-timeout>=2.3", "mdh-server"]
+build = ["pyinstaller>=6.10"]
+
+[project.gui-scripts]
+minecraft-distributed-hosting = "mdh_client.gui.app:main"
+
+[tool.setuptools.packages.find]
+include = ["mdh_client*"]

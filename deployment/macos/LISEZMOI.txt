@@ -1,0 +1,26 @@
+Minecraft Distributed Hosting pour Mac (puces Apple : M1, M2, M3, M4...)
+=====================================================================
+
+1. Installer
+   Fais glisser « Minecraft Distributed Hosting » sur le dossier « Applications ».
+
+2. Premier lancement (une seule fois)
+   L'application n'est pas signée par Apple : macOS la bloque la première fois.
+   - Ouvre l'application depuis Applications. macOS dit qu'il ne peut pas vérifier le
+     développeur : clique sur « OK » (ou « Terminé »).
+   - Ouvre Réglages Système → Confidentialité et sécurité. Tout en bas, en face de
+     « Minecraft Distributed Hosting a été bloqué », clique sur « Ouvrir quand même »,
+     puis confirme avec ton mot de passe ou Touch ID.
+   - Sur macOS 14 ou plus ancien, un clic droit sur l'application → « Ouvrir » suffit aussi.
+   Ensuite, elle s'ouvre normalement, et les mises à jour s'installent toutes seules
+   (elles sont vérifiées avec la signature de l'application, pas celle d'Apple).
+
+3. Bon à savoir
+   - L'icône de l'application est dans la barre des menus, en haut à droite.
+   - Tant que ce Mac héberge le serveur, il ne se met pas en veille tout seul. Fermer
+     l'écran d'un MacBook le met quand même en veille : le serveur passe alors sur un
+     autre ordinateur du groupe.
+   - La limite d'utilisation du processeur n'existe pas sur Mac : utilise la priorité
+     « Basse » dans les Paramètres si le Mac doit rester fluide.
+   - Les réglages et les mondes sont dans
+     ~/Library/Application Support/MinecraftDistributedHosting

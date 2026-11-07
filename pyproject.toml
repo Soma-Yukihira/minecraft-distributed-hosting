@@ -1,0 +1,11 @@
+# Workspace-level developer configuration (tests, linting).
+# Each component (shared/, server/, client/) has its own installable pyproject.toml.
+
+[tool.pytest.ini_options]
+testpaths = ["shared/tests", "server/tests", "client/tests"]
+pythonpath = ["shared", "server", "client", "server/tests", "client/tests"]
+addopts = "--import-mode=importlib -ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
