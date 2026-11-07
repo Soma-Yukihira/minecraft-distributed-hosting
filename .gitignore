@@ -22,5 +22,6 @@ data/
 *.sqlite3-shm
 logs/
 
-# Documentation: stays on this PC, never sent to GitHub
+# Documentation: stays on this PC, never sent to GitHub (except the README)
 *.md
+!/README.md
