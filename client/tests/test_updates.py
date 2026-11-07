@@ -177,3 +177,90 @@ def test_a_pc_about_to_update_hosts_nothing_new(tmp_path):
             await agent.close()
 
     asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- 0.12.0
+
+
+def test_a_published_release_reaches_the_applications_at_once(tmp_path, monkeypatch):
+    """The control plane announces it; the application fetches it without waiting for its
+    hourly check (made to never come here)."""
+    from mdh_client.application import agent as agent_module
+    from mdh_server import app as server_app
+    from mdh_server import releases
+    from test_agent_live import Recorder, until
+
+    monkeypatch.setattr(server_app, "RELEASE_POLL_EVERY_S", 0.2)
+    monkeypatch.setattr(updates, "FIRST_CHECK_AFTER_S", 3600.0)
+    monkeypatch.setattr(agent_module, "ANNOUNCE_SPREAD_S", 0.0)
+    b = LiveBackend(tmp_path)
+    publish(b.updates, "0.1.5", b"MZ old")                 # already there at startup: not announced
+    b.start()
+    layout = Layout(tmp_path / "client")
+    layout.ensure()
+
+    async def scenario():
+        agent = HostAgent(layout, ClientSettings(api_url=b.url), emit=Recorder(), store_credentials=False,
+                          detect_resources=plenty_of_resources, auto_updates=True)
+        agent.updater.current, agent.updater.keys = "0.1.0", TRUSTED
+        try:
+            await agent.api.register("oscar", PW, None)
+            await agent.login("oscar", PW)
+            await until(lambda: agent.channel.connected, what="online")
+            await asyncio.sleep(1)
+            assert agent.updater.ready is None                 # nothing announced, no hourly check yet
+
+            installer = b"MZ" + bytes(range(256)) * 100
+            publish(b.updates, "0.2.0", installer, notes="Ajout de l'anti-triche.")
+            await until(lambda: agent.updater.ready is not None, timeout=10, what="release announced")
+            assert agent.updater.ready.version == "0.2.0" and agent.updater.ready.installer.read_bytes() == installer
+            assert ("update", {"version": "0.2.0", "notes": "Ajout de l'anti-triche."}) in agent._listener.events
+
+            # The button: same answer, nothing downloaded twice; an older announcement is ignored.
+            assert (await agent.check_for_updates()).version == "0.2.0"
+            from mdh_shared.protocol.messages import ClientReleaseNotice
+            agent._on_release_notice(ClientReleaseNotice(platform="windows", version="0.0.9"))
+            agent._on_release_notice(ClientReleaseNotice(platform="macos-arm64", version="9.0.0"))
+        finally:
+            await agent.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        b.stop()
+    watcher = releases.ReleaseWatcher(releases.shelves(b.updates))
+    assert watcher.poll() == []                                # nothing new since it looked
+
+
+def test_checks_never_overlap_and_the_button_needs_the_installed_app(backend, tmp_path):
+    publish(backend.updates, "0.2.0", b"MZ" + b"x" * 300_000)
+
+    async def scenario():
+        api = await logged_in(backend)
+        downloads = []
+        real = api.download_client_installer
+
+        async def counted(*a, **k):
+            downloads.append(1)
+            return await real(*a, **k)
+
+        api.download_client_installer = counted
+        try:
+            up = Updater(tmp_path / "updates", lambda: api, current="0.1.0", keys=TRUSTED)
+            first, second, third = await asyncio.gather(up.check(), up.check(), up.check())
+            assert first == second == third and first is not None and len(downloads) == 1
+        finally:
+            await api.close()
+
+        layout = Layout(tmp_path / "dev")
+        layout.ensure()
+        dev = HostAgent(layout, ClientSettings(), store_credentials=False, detect_resources=plenty_of_resources,
+                        auto_updates=False)
+        try:
+            assert not dev.can_update
+            with pytest.raises(RuntimeError, match="installée"):
+                await dev.check_for_updates()
+        finally:
+            await dev.close()
+
+    asyncio.run(scenario())

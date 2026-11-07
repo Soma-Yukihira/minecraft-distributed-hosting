@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdh-server"
-version = "0.11.0"
+version = "0.12.0"
 description = "Minecraft Distributed Hosting - VPS control plane"
 requires-python = ">=3.12"
 dependencies = [

@@ -75,6 +75,14 @@ class Hub:
         for session in list(self._users.get(user_id, ())):
             await session.send(message)
 
+    async def broadcast(self, message) -> int:
+        """To every connected application (whoever is logged in); returns how many got it."""
+        sent = 0
+        for sessions in list(self._users.values()):
+            for session in list(sessions):
+                sent += await session.send(message)
+        return sent
+
     async def group_changed(self, conn: sqlite3.Connection, group_id: str, *also: str) -> None:
         """Members, roles or servers changed: every member's application reads the group again,
         and so do ``also`` (a member who just left, and is no longer in the list)."""

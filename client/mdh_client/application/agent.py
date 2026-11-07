@@ -20,6 +20,7 @@ import collections
 import contextlib
 import logging
 import os
+import random
 import re
 import shutil
 import sys
@@ -52,7 +53,7 @@ from mdh_client.networking.relay_tunnel import run_tunnel
 from mdh_client.synchronization import world_files
 from mdh_client.system import benchmark
 from mdh_client.system.awake import KeepAwake
-from mdh_client.system.updates import ReadyUpdate, Updater
+from mdh_client.system.updates import ANNOUNCE_SPREAD_S, ReadyUpdate, Updater, is_newer
 from mdh_client.synchronization.engine import LeaseContext, LeaseLost, NotEnoughSpace, SyncEngine, SyncError
 from mdh_shared import __version__, versions
 from mdh_shared.constants import LEASE_SAFETY_MARGIN_S, MIN_SERVER_VERSION
@@ -70,6 +71,7 @@ from mdh_shared.protocol.messages import (
     RelayOpen,
     ServerUpdate,
     GroupUpdate,
+    ClientReleaseNotice,
     StopRequest,
 )
 
@@ -261,11 +263,32 @@ class HostAgent:
                 self._set_too_old("plus récente")
         asyncio.create_task(recheck())
 
-    async def _update_now(self) -> None:
+    async def _update_now(self, delay_s: float = 0.0) -> None:
+        await asyncio.sleep(delay_s)
         try:
             await self.updater.check()
         except Exception as exc:  # noqa: BLE001 - the regular checks try again later
             log.warning("update check failed: %s", exc)
+
+    def _on_release_notice(self, msg: ClientReleaseNotice) -> None:
+        """A version was just published: fetch it now (it is verified like any other)."""
+        if (not self._auto_updates or msg.platform != self.updater.platform
+                or not is_newer(msg.version, self.updater.current)
+                or (self.updater.ready and self.updater.ready.version == msg.version)):
+            return
+        log.info("version %s announced by the control plane", msg.version)
+        asyncio.create_task(self._update_now(random.uniform(0, ANNOUNCE_SPREAD_S)))
+
+    @property
+    def can_update(self) -> bool:
+        """Only the installed application can install a new version of itself."""
+        return self._auto_updates
+
+    async def check_for_updates(self) -> ReadyUpdate | None:
+        """The "Vérifier les mises à jour" button: now, with the reason when it fails."""
+        if not self._auto_updates:
+            raise RuntimeError("seule l'application installée peut se mettre à jour")
+        return await self.updater.check()
 
     async def login(self, username: str, password: str) -> dict[str, Any]:
         await self.check_compatibility()
@@ -516,6 +539,8 @@ class HostAgent:
             await self._on_action(msg)
         elif isinstance(msg, GroupUpdate):
             self.emit("group_update", group_id=msg.group_id)
+        elif isinstance(msg, ClientReleaseNotice):
+            self._on_release_notice(msg)
         elif isinstance(msg, ServerUpdate):
             self.emit("server_update", **msg.model_dump(mode="json"))
             if msg.state == "deleted":

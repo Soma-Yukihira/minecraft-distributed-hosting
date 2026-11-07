@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from mdh_shared.constants import MAX_WS_MESSAGE_BYTES
-from mdh_shared.models.api import Id, PlayerName, PregenDimension, PregenProgress, SparkProfile
+from mdh_shared.models.api import ClientPlatform, Id, PlayerName, PregenDimension, PregenProgress, SparkProfile
 from mdh_shared.models.enums import HostRuntimeState
 
 
@@ -232,6 +232,16 @@ class GroupUpdate(_Msg):
     group_id: Id
 
 
+class ClientReleaseNotice(_Msg):
+    """A new version of the application was just published for that system (0.12.0): the
+    application checks for it at once instead of at its next hourly check. It still verifies the
+    signature of what it downloads; this message only says when to look."""
+
+    type: Literal["client_release"] = "client_release"
+    platform: ClientPlatform
+    version: str = Field(max_length=32, pattern=r"^\d+\.\d+\.\d+$")
+
+
 ServerMessage = Annotated[
     Welcome
     | HeartbeatAck
@@ -243,7 +253,8 @@ ServerMessage = Annotated[
     | ActionMessage
     | RelayOpen
     | ServerUpdate
-    | GroupUpdate,
+    | GroupUpdate
+    | ClientReleaseNotice,
     Field(discriminator="type"),
 ]
 

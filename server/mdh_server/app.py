@@ -43,10 +43,13 @@ from mdh_server.storage import retention
 from mdh_server.storage.store import BlobStore
 from mdh_shared import __version__
 from mdh_shared.constants import MIN_CLIENT_VERSION
+from mdh_shared.protocol.messages import ClientReleaseNotice
 
 log = logging.getLogger("mdh.app")
 
 HOUSEKEEPING_EVERY_S = 300.0
+#: How soon a published release reaches the applications (it costs two file stats per system).
+RELEASE_POLL_EVERY_S = 10.0
 
 
 def build_context(settings: Settings, *, clock: Callable[[], float] = time.time,
@@ -61,6 +64,7 @@ def build_context(settings: Settings, *, clock: Callable[[], float] = time.time,
     ctx.coordinator = Coordinator(ctx)
     ctx.store = BlobStore(Path(settings.storage_dir))
     ctx.releases = releases.shelves(Path(settings.updates_dir))
+    ctx.release_watcher = releases.ReleaseWatcher(ctx.releases)
     ctx.run_marker = RunMarker(Path(settings.storage_dir).parent)
     ctx.relay = Relay(ctx)
     with immediate(conn):
@@ -78,12 +82,23 @@ def housekeeping(ctx: AppContext) -> None:
     retention.collect(ctx.conn, ctx.store, now, ctx.settings.retention)
 
 
+async def announce_releases(ctx: AppContext) -> None:
+    """Tell every connected application about a release published since the last look."""
+    for platform, release in await asyncio.to_thread(ctx.release_watcher.poll):
+        sent = await ctx.hub.broadcast(ClientReleaseNotice(platform=platform, version=release.version))
+        log.info("client release %s for %s announced to %d application(s)", release.version, platform, sent)
+
+
 async def _sweeper(ctx: AppContext) -> None:
     last_housekeeping = 0.0
+    last_releases = time.monotonic()
     while True:
         await asyncio.sleep(ctx.settings.sweep_interval_s)
         try:
             await ctx.coordinator.tick()
+            if time.monotonic() - last_releases > RELEASE_POLL_EVERY_S:
+                last_releases = time.monotonic()
+                await announce_releases(ctx)
             if time.monotonic() - last_housekeeping > HOUSEKEEPING_EVERY_S:
                 housekeeping(ctx)
                 last_housekeeping = time.monotonic()

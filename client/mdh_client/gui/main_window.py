@@ -254,6 +254,37 @@ class MainWindow(QMainWindow):
             log.info("installing version %s automatically", self.state.update["version"])
             self.install_update(automatic=True)
 
+    def check_updates(self) -> None:
+        """The "Vérifier les mises à jour" button (Paramètres > Application)."""
+        page = self.pages[5]  # SettingsPage
+        page.check_btn.setEnabled(False)
+        page.check_btn.setText("Recherche…")
+        page.check_result = ""
+
+        def done(ready: Any) -> None:
+            page.check_btn.setText("Vérifier les mises à jour")
+            page.check_btn.setEnabled(True)
+            if ready is not None:
+                # Maybe already known (then no new "update" event): shown all the same.
+                self.state.update = {"version": ready.version, "notes": ready.notes}
+                self.update_btn.setText(f"Mettre à jour ({ready.version})")
+                self.update_btn.setVisible(True)
+                self.statusBar().showMessage(f"Version {ready.version} prête à installer.", 8000)
+            else:
+                self.state.update = None
+                self.update_btn.setVisible(False)
+                page.check_result = f"C'est la dernière version (vérifié à {datetime.now():%H:%M})."
+                self.statusBar().showMessage("Aucune mise à jour : c'est la dernière version.", 8000)
+            self.render()
+
+        def failed(exc: BaseException) -> None:
+            page.check_btn.setText("Vérifier les mises à jour")
+            page.check_btn.setEnabled(True)
+            page.check_result = f"Vérification impossible : {error_text(exc)}"
+            self.render()
+
+        self.bridge.run(self.agent.check_for_updates(), on_ok=done, on_error=failed)
+
     def install_update(self, automatic: bool = False) -> None:
         """Quit cleanly, then let the verified installer replace the program and restart it."""
         if self._quitting or not self.state.update:

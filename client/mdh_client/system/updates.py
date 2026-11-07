@@ -45,9 +45,15 @@ TRUSTED_KEYS: tuple[str, ...] = (
     "YOilJ86js9f+3TlBsEt5c7zvMgY9DZM5y78qNEEUUgU=",  # created 2026-11-01
 )
 
-FIRST_CHECK_AFTER_S = 60.0
-CHECK_EVERY_S = 6 * 3600.0
-RETRY_AFTER_S = 1800.0
+#: Since 0.12.0 the control plane announces a new release the moment it is published
+#: (``ClientReleaseNotice``); the regular checks only catch what that message missed (an older
+#: control plane, the application offline at that moment).
+FIRST_CHECK_AFTER_S = 20.0
+CHECK_EVERY_S = 3600.0
+RETRY_AFTER_S = 600.0
+#: After an announcement, each application waits a random moment up to this long, so that the
+#: whole group does not download 40 MB from the VPS in the same second.
+ANNOUNCE_SPREAD_S = 30.0
 
 Relaunch = Literal["show", "tray"]
 
@@ -105,9 +111,15 @@ class Updater:
         self.keys = TRUSTED_KEYS if keys is None else keys
         self._on_ready = on_ready
         self.ready: ReadyUpdate | None = None
+        #: One check at a time (the button, an announcement and the hourly check may meet).
+        self._lock = asyncio.Lock()
 
     async def check(self) -> ReadyUpdate | None:
         """Ask the control plane, download and verify a newer release if there is one."""
+        async with self._lock:
+            return await self._check()
+
+    async def _check(self) -> ReadyUpdate | None:
         raw = await self._api().client_release(self.platform)
         if raw is None:
             return self._set_ready(None)

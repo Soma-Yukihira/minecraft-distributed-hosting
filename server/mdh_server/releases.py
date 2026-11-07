@@ -33,6 +33,36 @@ def shelves(updates_dir: Path) -> dict[str, ReleaseShelf]:
     return {p: ReleaseShelf(updates_dir if p == "windows" else updates_dir / p, p) for p in CLIENT_PLATFORMS}
 
 
+class ReleaseWatcher:
+    """Notices a newly published release (0.12.0), so that the applications hear of it at once.
+
+    Polled by the control plane's sweeper: :meth:`ReleaseShelf.current` only stats two files when
+    nothing changed. What was already published when the control plane started is not announced
+    (the applications check when they start).
+    """
+
+    def __init__(self, shelves: dict[str, ReleaseShelf]) -> None:
+        self.shelves = shelves
+        self._seen: dict[str, tuple[str, str] | None] = {p: self._key(s) for p, s in shelves.items()}
+
+    @staticmethod
+    def _key(shelf: ReleaseShelf) -> tuple[str, str] | None:
+        found = shelf.current()
+        return (found[0].version, found[0].sha256) if found else None
+
+    def poll(self) -> list[tuple[str, ClientRelease]]:
+        """Releases published (or replaced) since the last call. Blocking: run in a thread."""
+        new = []
+        for platform, shelf in self.shelves.items():
+            found = shelf.current()
+            key = (found[0].version, found[0].sha256) if found else None
+            if key != self._seen[platform]:
+                self._seen[platform] = key
+                if found:
+                    new.append((platform, found[0]))
+        return new
+
+
 class ReleaseShelf:
     """The published release, re-read whenever its files change on disk."""
 

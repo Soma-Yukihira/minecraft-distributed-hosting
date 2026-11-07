@@ -1396,13 +1396,21 @@ class SettingsPage(QWidget):
         self.update_btn = QPushButton("Installer la mise à jour")
         self.update_btn.setObjectName("Primary")
         self.update_btn.clicked.connect(lambda: win.install_update())
+        self.check_btn = QPushButton("Vérifier les mises à jour")
+        self.check_btn.clicked.connect(win.check_updates)
+        self.check_btn.setEnabled(win.agent.can_update)
+        if not win.agent.can_update:
+            self.check_btn.setToolTip("Disponible dans la version installée de l'application.")
+        #: Result of the last click on the button, shown under the version.
+        self.check_result = ""
         self.auto_update = QCheckBox("Installer les mises à jour automatiquement (quand la fenêtre est "
                                      "fermée et que ce PC n'héberge pas le serveur)")
         self.auto_update.setChecked(settings.auto_update)
         self.auto_update.toggled.connect(lambda on: win.save_settings(auto_update=on))
         ab.addWidget(self.version, 0, 0)
-        ab.addWidget(self.update_btn, 0, 1)
-        ab.addWidget(self.auto_update, 1, 0, 1, 2)
+        ab.addWidget(self.check_btn, 0, 1)
+        ab.addWidget(self.update_btn, 0, 2)
+        ab.addWidget(self.auto_update, 1, 0, 1, 3)
         ab.setColumnStretch(0, 1)
         layout.addWidget(app_box)
 
@@ -1471,7 +1479,7 @@ class SettingsPage(QWidget):
             self.version.setText(f"Version {__version__} installée. La version {s.update['version']} est "
                                  "téléchargée et vérifiée." + (f"\n{notes}" if notes else ""))
         else:
-            self.version.setText(f"Version {__version__} : à jour.")
+            self.version.setText(f"Version {__version__}." + (f" {self.check_result}" if self.check_result else ""))
         self.update_btn.setVisible(bool(s.update))
         if settings.eula_accepted_at:
             when = datetime.fromisoformat(settings.eula_accepted_at).astimezone().strftime("%d/%m/%Y")

@@ -977,3 +977,40 @@ def test_deleting_a_server_needs_its_exact_name(qapp, monkeypatch):
     fake.state.server["desired_running"] = True  # running: not even asked
     main_window.MainWindow.delete_server(fake)
     assert len(calls) == 1
+
+
+def test_the_check_for_updates_button(qapp):
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QPushButton
+
+    from mdh_client.gui import main_window
+    from mdh_client.system.updates import ReadyUpdate
+
+    answers = []
+    page = SimpleNamespace(check_btn=QPushButton("Vérifier les mises à jour"), check_result="")
+    header = QPushButton()
+    messages = []
+
+    async def check():
+        result = answers.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    fake = SimpleNamespace(pages=[None] * 5 + [page], state=SimpleNamespace(update=None), update_btn=header,
+                           bridge=SyncBridge(), agent=SimpleNamespace(check_for_updates=check),
+                           statusBar=lambda: SimpleNamespace(showMessage=lambda m, t=0: messages.append(m)),
+                           render=lambda: None)
+    answers.append(None)
+    main_window.MainWindow.check_updates(fake)
+    assert "dernière version" in page.check_result and page.check_btn.isEnabled() and fake.state.update is None
+
+    answers.append(ReadyUpdate("0.12.0", "Bouton de mise à jour.", None, "0" * 64, 1))
+    main_window.MainWindow.check_updates(fake)
+    assert fake.state.update == {"version": "0.12.0", "notes": "Bouton de mise à jour."}
+    assert header.text() == "Mettre à jour (0.12.0)" and "0.12.0" in messages[-1]
+
+    answers.append(RuntimeError("serveur central injoignable"))
+    main_window.MainWindow.check_updates(fake)
+    assert page.check_result.startswith("Vérification impossible") and page.check_btn.text() == "Vérifier les mises à jour"
