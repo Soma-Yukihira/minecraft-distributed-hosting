@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  actions: write  # only to delete the older builds (last step)
 
 jobs:
   build:
@@ -49,4 +50,16 @@ jobs:
             dist/macos/*.dmg
             dist/macos/SHA256SUMS
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
+      - name: Remove the older Mac builds
+        # Only this build stays on GitHub: each one is downloaded to the Windows PC right after,
+        # and ~100 MB per version would soon fill the 500 MB of a free private repository.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select((.name | startswith("mac-")) and .workflow_run.id != (env.RUN_ID | tonumber)) | .id' \
+          | while read -r id; do
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" && echo "removed artifact $id"
+            done
