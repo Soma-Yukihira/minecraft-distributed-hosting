@@ -51,8 +51,14 @@ def _require_host_member(ctx, group_id: str, user_id: str):
 
 
 def used_bytes(conn, group_id: str) -> int:
-    return conn.execute("SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE group_id = ?",
-                        (group_id,)).fetchone()[0]
+    """Kept up to date by triggers on ``blobs`` (schema v14)."""
+    row = conn.execute("SELECT used_bytes FROM groups WHERE id = ?", (group_id,)).fetchone()
+    return row[0] if row else 0
+
+
+def _quota_full(conn, group_id: str, adding: int) -> bool:
+    quota = conn.execute("SELECT storage_quota_bytes FROM groups WHERE id = ?", (group_id,)).fetchone()[0]
+    return used_bytes(conn, group_id) + adding > quota
 
 
 def version_info(row) -> VersionInfo:
@@ -96,17 +102,27 @@ async def put_blob(group_id: str, sha256: str, request: Request, user: CurrentUs
             raise ApiError(413, "too_large", "compressed block too large")
     if ctx.conn.execute("SELECT 1 FROM blobs WHERE group_id = ? AND sha256 = ?", (group_id, sha256)).fetchone():
         return None
-    quota = ctx.conn.execute("SELECT storage_quota_bytes FROM groups WHERE id = ?", (group_id,)).fetchone()[0]
-    if used_bytes(ctx.conn, group_id) + len(body) > quota:
-        raise ApiError(507, "quota_exceeded", "the group's storage quota on the VPS is full")
+    if _quota_full(ctx.conn, group_id, len(body)):  # early, before any work
+        raise _quota_exceeded()
     try:
         # Decompression, hashing and fsync happen off the event loop.
         size, stored = await run_in_threadpool(ctx.store.put_blob, group_id, sha256, bytes(body))
     except StorageError as exc:
         raise _storage_error(exc) from None
-    ctx.conn.execute("INSERT OR IGNORE INTO blobs (group_id, sha256, size, stored_size, created_at)"
-                     " VALUES (?, ?, ?, ?, ?)", (group_id, sha256, size, stored, ctx.now()))
+    # Checked again with the insert, in one transaction: other uploads ran during the await.
+    # A refused block may stay on disk without its row; the next upload of it reuses the file.
+    with immediate(ctx.conn):
+        if ctx.conn.execute("SELECT 1 FROM blobs WHERE group_id = ? AND sha256 = ?", (group_id, sha256)).fetchone():
+            return None
+        if _quota_full(ctx.conn, group_id, stored):
+            raise _quota_exceeded()
+        ctx.conn.execute("INSERT INTO blobs (group_id, sha256, size, stored_size, created_at)"
+                         " VALUES (?, ?, ?, ?, ?)", (group_id, sha256, size, stored, ctx.now()))
     return None
+
+
+def _quota_exceeded() -> ApiError:
+    return ApiError(507, "quota_exceeded", "the group's storage quota on the VPS is full")
 
 
 @router.get("/groups/{group_id}/blobs/{sha256}")

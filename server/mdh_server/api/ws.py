@@ -91,6 +91,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while not session.closed:
             raw = await asyncio.wait_for(websocket.receive_text(), idle_timeout)
+            # A heartbeat every 10 s and a few answers: anything faster is a flood (each frame
+            # costs a database read, and a heartbeat a transaction).
+            if not ctx.limiter.hit(f"wsmsg:{session.session_id}", per_minute=ctx.settings.ws_messages_per_minute,
+                                   burst=ctx.settings.ws_messages_burst):
+                raise ProtocolError("too many messages")
             msg = parse_client_message(raw)
             # Long-lived session: a disabled account is cut off at its next frame.
             if ctx.conn.execute("SELECT disabled FROM users WHERE id = ?",

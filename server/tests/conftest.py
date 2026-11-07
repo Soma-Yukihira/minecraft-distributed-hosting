@@ -31,7 +31,8 @@ def seed_database(conn: sqlite3.Connection, path: Path, n_hosts: int = 3) -> See
     user, group, server = new_id(), new_id(), new_id()
     hosts = [new_id() for _ in range(n_hosts)]
     conn.execute("INSERT INTO users VALUES (?, 'oscar', 'x', 0, 0)", (user,))
-    conn.execute("INSERT INTO groups VALUES (?, 'amis', ?, 0, 1000000)", (group, user))
+    conn.execute("INSERT INTO groups (id, name, owner_id, created_at, storage_quota_bytes)"
+                 " VALUES (?, 'amis', ?, 0, 1000000)", (group, user))
     conn.execute(
         "INSERT INTO servers (id, group_id, name, mc_version, loader, memory_mb, created_at)"
         " VALUES (?, ?, 'survie', '1.21.4', 'paper', 6144, 0)",

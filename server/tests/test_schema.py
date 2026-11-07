@@ -96,3 +96,35 @@ def test_usernames_unique_case_insensitive(db) -> None:
     conn, _ = db
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO users VALUES (?, 'OSCAR', 'x', 0, 0)", (new_id(),))
+
+
+def test_used_space_is_counted_from_the_existing_blocks_then_kept_up_to_date(tmp_path) -> None:
+    from mdh_server.database import db
+
+    path = tmp_path / "v13.sqlite3"
+    conn = connect(path)
+    saved = db.SCHEMA_VERSION
+    try:
+        db.SCHEMA_VERSION = 13  # a control plane from before the counter
+        migrate(conn)
+    finally:
+        db.SCHEMA_VERSION = saved
+    user, group, other = new_id(), new_id(), new_id()
+    conn.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES (?, 'oscar', 'x', 0)", (user,))
+    for gid in (group, other):
+        conn.execute("INSERT INTO groups (id, name, owner_id, created_at, storage_quota_bytes)"
+                     " VALUES (?, 'g', ?, 0, 1000)", (gid, user))
+    for i, size in enumerate((100, 250)):
+        conn.execute("INSERT INTO blobs VALUES (?, ?, 1, ?, 0)", (group, f"{i:064x}", size))
+    conn.execute("INSERT INTO blobs VALUES (?, ?, 1, 7, 0)", (other, "f" * 64))
+
+    migrate(conn)  # v14: the counter starts from what is already there
+
+    def used(gid: str) -> int:
+        return conn.execute("SELECT used_bytes FROM groups WHERE id = ?", (gid,)).fetchone()[0]
+
+    assert (used(group), used(other)) == (350, 7)
+    conn.execute("INSERT INTO blobs VALUES (?, ?, 1, 50, 0)", (group, "a" * 64))
+    conn.execute("DELETE FROM blobs WHERE group_id = ? AND sha256 = ?", (group, f"{0:064x}"))
+    conn.execute("UPDATE blobs SET stored_size = 20 WHERE group_id = ?", (other,))
+    assert (used(group), used(other)) == (300, 20)

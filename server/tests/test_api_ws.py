@@ -71,3 +71,59 @@ def test_oversized_frame_closes_session(world) -> None:
     pc = world.h.connect_host(world.oscar, world.pc_oscar)
     pc.ws.send_text(json.dumps({"type": "heartbeat", "seq": 99, "pad": "x" * 70_000}))
     assert pc.expect_closed() == 1008
+
+
+def test_a_flood_of_messages_closes_the_session(harness_factory) -> None:
+    h = harness_factory(ws_messages_per_minute=120.0, ws_messages_burst=30)
+    oscar = h.register("oscar")
+    pc = h.connect_host(oscar, h.register_host(oscar))
+    for _ in range(40):  # far more than a heartbeat every 10 s
+        pc.ws.send_text(json.dumps({"type": "heartbeat", "seq": pc.seq + 1}))
+        pc.seq += 1
+    codes = []
+    try:
+        while True:
+            pc.recv(timeout=1.0)
+    except Exception as exc:  # noqa: BLE001 - the session ends
+        codes.append(getattr(exc, "code", None))
+    assert codes == [1008]
+
+
+def test_a_client_that_stops_reading_does_not_hold_up_the_others() -> None:
+    """Without a timeout, one stuck send_text would block every broadcast (and the sweeper)."""
+    import asyncio
+
+    from mdh_server import realtime
+    from mdh_shared.protocol.messages import GroupUpdate
+
+    class Stuck:
+        closed_with = None
+
+        async def send_text(self, _):
+            await asyncio.Event().wait()  # never returns
+
+        async def close(self, code):
+            self.closed_with = code
+
+    class Fine:
+        def __init__(self):
+            self.got = []
+
+        async def send_text(self, text):
+            self.got.append(text)
+
+    async def scenario():
+        realtime.SEND_TIMEOUT_S, saved = 0.2, realtime.SEND_TIMEOUT_S
+        try:
+            hub = realtime.Hub()
+            stuck, fine = Stuck(), Fine()
+            s1 = realtime.Session("a" * 32, "u1", None, stuck)  # type: ignore[arg-type]
+            s2 = realtime.Session("b" * 32, "u2", None, fine)  # type: ignore[arg-type]
+            hub.register(s1)
+            hub.register(s2)
+            sent = await asyncio.wait_for(hub.broadcast(GroupUpdate(group_id="c" * 32)), 2.0)
+            return sent, s1.closed, stuck.closed_with, len(fine.got)
+        finally:
+            realtime.SEND_TIMEOUT_S = saved
+
+    assert asyncio.run(scenario()) == (1, True, 1011, 1)

@@ -174,3 +174,19 @@ def test_guessing_invitation_codes_is_throttled(harness_factory) -> None:
                                                           "invite_code": f"guess{i:011d}"}).json()["error"]["code"]
              for i in range(12)]
     assert codes[:10] == ["invalid_invite"] * 10 and codes[-1] == "rate_limited"
+
+
+def test_wrong_passwords_from_elsewhere_do_not_lock_the_owner_out(harness_factory) -> None:
+    h = harness_factory(trusted_proxies=frozenset({"testclient"}))
+    h.register("oscar")
+
+    def login(password: str, ip: str) -> int:
+        return h.client.post("/api/v1/auth/login", json={"username": "oscar", "password": password},
+                             headers={"X-Real-IP": ip}).status_code
+
+    assert [login("wrong password!", "198.51.100.7") for _ in range(7)][-1] == 429
+    assert login(PASSWORD, "203.0.113.20") == 200  # the owner, from home
+
+    # Guesses spread over many addresses still hit the account-wide limit.
+    codes = [login("wrong password!", f"198.51.100.{i}") for i in range(10, 60)]
+    assert codes[-1] == 429

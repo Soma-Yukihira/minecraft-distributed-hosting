@@ -59,7 +59,7 @@ from mdh_shared import __version__, versions
 from mdh_shared.constants import LEASE_SAFETY_MARGIN_S, MIN_SERVER_VERSION
 from mdh_shared.models.api import (MAP_MOD_SLUG, MAX_CONFIG_FILE_BYTES, PREGEN_MOD_SLUG, SPARK_MOD_SLUG,
                                    CrashReport, Datapack, Mod, Modpack, PregenProgress, ResourcePack,
-                                   SparkProfile, anticheat_enabled, anticheat_slugs)
+                                   SparkProfile, anticheat_enabled, anticheat_slugs, validate_properties)
 from mdh_shared.models.enums import Loader
 from mdh_shared.protocol.messages import (
     ActionMessage,
@@ -879,7 +879,8 @@ class HostAgent:
             pack = Modpack.model_validate(server["modpack"])
             path = await self.mod_installer.fetch_file(pack.url, pack.sha512, pack.size, ".mrpack", pack.name,
                                                        lambda m, f: self.emit("progress", message=m, fraction=f))
-            count = await asyncio.to_thread(modpack.apply_overrides, path, directory)
+            count = await asyncio.to_thread(modpack.apply_overrides, path, directory,
+                                            datapacks.level_name(server.get("properties", {})))
             log.info("modpack %s %s: %d configuration files", pack.name, pack.version_number, count)
         await datapacks.install(directory, datapacks.level_name(server.get("properties", {})), _datapacks(server),
                                 self.mod_installer, lambda m, f: self.emit("progress", message=m, fraction=f))
@@ -1040,7 +1041,7 @@ class HostAgent:
         # Chunky cannot pre-generate while Minecraft pauses an empty server (1.21.2+).
         chunky = {"pause-when-empty-seconds": 0} if any(m.slug == PREGEN_MOD_SLUG for m in _mods(server)) else {}
         server_files.write_properties(directory / "server.properties",
-                                      {**server.get("properties", {}), **chunky,
+                                      {**_group_properties(server), **chunky,
                                        **resource_pack.properties(server.get("resource_pack"))},
                                       port=self.settings.server_port, allow_offline_accounts=offline)
         if offline:
@@ -1847,6 +1848,18 @@ class HostAgent:
         await self.api.close()
         await self._downloads.aclose()
         await self._pack_client.aclose()
+
+
+def _group_properties(server: dict[str, Any]) -> dict[str, Any]:
+    """The group's server.properties settings, checked again here: whoever controls the VPS still
+    cannot set a key the API refuses (rcon, server-ip...) or slip a line break into one."""
+    kept: dict[str, Any] = {}
+    for key, value in (server.get("properties") or {}).items():
+        try:
+            kept.update(validate_properties({key: value}))
+        except (ValueError, TypeError):
+            log.warning("server.properties setting %r from the control plane refused", key)
+    return kept
 
 
 def _mods(server: dict[str, Any]) -> list[Mod]:

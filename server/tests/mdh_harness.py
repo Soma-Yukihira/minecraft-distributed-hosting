@@ -243,6 +243,8 @@ class Harness:
 def make_settings(tmp_path: Path, **overrides) -> Settings:
     base = dict(database_path=str(tmp_path / "db" / "mdh.sqlite3"), storage_dir=str(tmp_path / "storage"),
                 background_tasks=False, relay_enabled=False,
-                registration_mode="open")
+                registration_mode="open",
+                # Tests run hours of fake time in a few real seconds: no flood limit by default.
+                ws_messages_per_minute=1e9, ws_messages_burst=10**9)
     base.update(overrides)
     return Settings(**base)

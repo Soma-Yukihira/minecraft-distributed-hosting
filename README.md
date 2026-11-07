@@ -167,6 +167,10 @@ s'arrête au moindre problème. Les étapes suivent dans cet ordre :
 Si l'hébergeur dispose de son propre pare-feu, les ports **TCP 8443** et **TCP 25565** doivent
 également y être ouverts.
 
+Pour utiliser un autre port Minecraft que 25565, indiquez-le dès la première installation :
+`sudo MDH_RELAY_PORT=25570 bash install.sh app`, puis `sudo bash install.sh firewall`. Le port est
+ensuite conservé dans `/etc/mdh/mdh.env`, et les joueurs ajoutent `:25570` à l'adresse du serveur.
+
 ### 4. Obtenir l'adresse du serveur central
 
 ```bash

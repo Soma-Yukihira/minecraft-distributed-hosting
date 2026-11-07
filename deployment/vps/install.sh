@@ -4,13 +4,16 @@
 #   sudo bash install.sh check              read-only checks: changes nothing
 #   sudo bash install.sh app                python3-venv, user "mdh", code, service on 127.0.0.1:8090
 #   sudo bash install.sh nginx              self-signed certificate + Nginx site on port 8443
-#   sudo bash install.sh firewall           UFW: allow 8443/tcp and 25565/tcp
+#   sudo bash install.sh firewall           UFW: allow 8443/tcp and the relay port (25565/tcp)
 #   sudo bash install.sh address            print the addresses to give to the group
 #   sudo bash install.sh create-user NAME   first account (registration is by invitation)
 #   sudo bash install.sh reset-password NAME   new password for someone who forgot theirs
 #   sudo bash install.sh status             read-only: service, disk, memory, last errors
 #   sudo bash install.sh publish-client FILE... offer a new version of the application
 #                                              (Windows .exe and/or Mac .zip, each with FILE.json)
+#
+# Another relay port at the first installation: sudo MDH_RELAY_PORT=25570 bash install.sh app
+# (then firewall). Afterwards the port is the one in /etc/mdh/mdh.env.
 #
 # Updating = unpacking a newer package and running "app" again (database saved first).
 # Every step can be undone with rollback.sh. Nothing else is touched: Pi-hole, Unbound,
@@ -28,7 +31,24 @@ SITE=/etc/nginx/sites-available/mdh
 SITE_LINK=/etc/nginx/sites-enabled/mdh
 API_PORT=8090
 HTTPS_PORT=8443
-RELAY_PORT=25565
+# Relay port: the one of the existing configuration (never rewritten), else MDH_RELAY_PORT for
+# a first installation, else 25565. The firewall rule always follows the service.
+relay_port() {
+    local p from_env="${MDH_RELAY_PORT:-}"
+    p="$(sed -n 's/^MDH_RELAY_PORT=//p' "$CONF/mdh.env" 2> /dev/null | tail -n 1)"
+    if [ -n "$p" ] && [ -n "$from_env" ] && [ "$p" != "$from_env" ]; then
+        printf '   !!  MDH_RELAY_PORT=%s ignoré : %s/mdh.env dit %s (modifie ce fichier pour changer)\n' \
+            "$from_env" "$CONF" "$p" >&2
+    fi
+    p="${p:-${from_env:-25565}}"
+    case "$p" in ''|*[!0-9]*) printf 'ERREUR : port du relais invalide : %s\n' "$p" >&2; return 1 ;; esac
+    if [ "$p" -lt 1024 ] || [ "$p" -gt 65535 ] || [ "$p" = "$API_PORT" ] || [ "$p" = "$HTTPS_PORT" ]; then
+        printf 'ERREUR : port du relais impossible : %s (1024-65535, ni %s ni %s)\n' "$p" "$API_PORT" "$HTTPS_PORT" >&2
+        return 1
+    fi
+    echo "$p"
+}
+RELAY_PORT="$(relay_port)"
 
 say()  { printf '\n== %s\n' "$*"; }
 ok()   { printf '   ok  %s\n' "$*"; }

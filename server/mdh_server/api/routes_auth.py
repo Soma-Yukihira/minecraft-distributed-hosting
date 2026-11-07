@@ -54,6 +54,15 @@ def consume_invite(conn: sqlite3.Connection, invite: sqlite3.Row, user_id: str, 
                   actor_user_id=user_id)
 
 
+def user_limits(ctx, username: str, ip: str) -> None:
+    """Password guesses against one account. Per place first: someone typing wrong passwords on
+    purpose from elsewhere must not lock the owner out. The account-wide limit, much higher,
+    still stops guesses spread over many addresses."""
+    name = username.lower()
+    ctx.limiter.check(f"login-user-ip:{name}:{ip}", per_minute=10, burst=5)
+    ctx.limiter.check(f"login-user:{name}", per_minute=60, burst=30)
+
+
 @router.post("/register", status_code=201)
 async def register(body: RegisterRequest, request: Request, ctx: Ctx) -> dict[str, str]:
     ip = client_ip(request, ctx.settings.trusted_proxies)
@@ -93,7 +102,7 @@ async def register(body: RegisterRequest, request: Request, ctx: Ctx) -> dict[st
 async def login(body: LoginRequest, request: Request, ctx: Ctx) -> TokenPair:
     ip = client_ip(request, ctx.settings.trusted_proxies)
     ctx.limiter.check(f"login-ip:{ip}", per_minute=10, burst=5)
-    ctx.limiter.check(f"login-user:{body.username.lower()}", per_minute=10, burst=5)
+    user_limits(ctx, body.username, ip)
     row = ctx.conn.execute(
         "SELECT id, password_hash FROM users WHERE lower(username) = lower(?) AND disabled = 0",
         (body.username,),
@@ -131,7 +140,7 @@ async def logout(body: RefreshRequest, ctx: Ctx) -> Response:
 @me_router.post("/me/password", status_code=204)
 async def change_password(body: PasswordChange, request: Request, user: CurrentUser, ctx: Ctx) -> Response:
     """New password; every other session of this account (other PCs) must log in again."""
-    ctx.limiter.check(f"login-user:{user.username.lower()}", per_minute=10, burst=5)
+    user_limits(ctx, user.username, client_ip(request, ctx.settings.trusted_proxies))
     row = ctx.conn.execute("SELECT password_hash FROM users WHERE id = ?", (user.user_id,)).fetchone()
     if not await ctx.passwords.verify(row["password_hash"], body.current_password):
         raise ApiError(401, "invalid_credentials", "wrong current password")

@@ -1,0 +1,38 @@
+# Every push to main (and by hand): the whole test suite on Windows, like the PCs of the group,
+# then known vulnerabilities in the dependencies. Nothing is built or published here.
+#
+# Windows minutes count double on a private repository: about 25 minutes per run.
+name: Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --quiet -e ./shared -e "./server[test]" -e "./client[test]" pip-audit
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q -p no:cacheprovider
+      - name: Known vulnerabilities
+        run: python -m pip_audit --local --skip-editable

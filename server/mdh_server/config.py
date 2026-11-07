@@ -40,6 +40,9 @@ class Settings:
     trusted_proxies: frozenset[str] = frozenset({"127.0.0.1", "::1"})
     #: Run the periodic coordinator sweep. Tests disable it and call ``tick()`` themselves.
     background_tasks: bool = True
+    #: Messages one WebSocket session may send (a heartbeat every 10 s and a few answers).
+    ws_messages_per_minute: float = 120.0
+    ws_messages_burst: int = 30
     sweep_interval_s: float = 2.0
     expose_docs: bool = False
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)

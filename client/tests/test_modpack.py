@@ -122,6 +122,42 @@ def test_configuration_files_only(tmp_path) -> None:
     assert (server / "config" / "mine.toml").exists()
 
 
+def test_a_modpack_never_touches_the_world_nor_managed_files(tmp_path) -> None:
+    """Windows and macOS ignore case, and a world folder without level.dat is still the world."""
+    pack = tmp_path / "pack.mrpack"
+    pack.write_bytes(mrpack([], {
+        "overrides/OPS.json": b'[{"name": "author"}]', "overrides/Whitelist.json": b"[]",
+        "overrides/Server.properties": b"enable-rcon=true", "overrides/MODS/readme.txt": b"x",
+        "overrides/world/region/r.0.0.mca": b"their region", "overrides/World/playerdata/a.dat": b"x",
+        "overrides/world_nether/DIM-1/r.mca": b"x", "overrides/world/datapacks/evil.zip": b"PK",
+        "overrides/config/ok.toml": b"fine",
+    }))
+    server = tmp_path / "server"
+    (server / "world" / "region").mkdir(parents=True)
+    (server / "world" / "region" / "r.0.0.mca").write_bytes(b"our region")
+    assert modpack.apply_overrides(pack, server) == 1
+    assert (server / "world" / "region" / "r.0.0.mca").read_bytes() == b"our region"
+    assert sorted(p.relative_to(server).as_posix() for p in server.rglob("*") if p.is_file()
+                  and ".mdh" not in p.parts) == ["config/ok.toml", "world/region/r.0.0.mca"]
+
+    # A list written by an older version named a file of the world: it is never deleted.
+    (server / modpack.MANIFEST).write_text(json.dumps(["config/ok.toml", "world/region/r.0.0.mca"]))
+    other = tmp_path / "other.mrpack"
+    other.write_bytes(mrpack([], {"overrides/config/v2.toml": b"v2"}))
+    assert modpack.apply_overrides(other, server) == 1
+    assert (server / "world" / "region" / "r.0.0.mca").exists()
+    assert not (server / "config" / "ok.toml").exists()
+
+
+def test_a_world_with_another_name_is_protected_too(tmp_path) -> None:
+    pack = tmp_path / "pack.mrpack"
+    pack.write_bytes(mrpack([], {"overrides/survie/region/r.0.0.mca": b"x",
+                                 "overrides/survie_the_end/DIM1/r.mca": b"x"}))
+    server = tmp_path / "server"
+    server.mkdir()
+    assert modpack.apply_overrides(pack, server, "survie") == 0
+
+
 def mods_for_players(fake: FakeModrinth) -> list:
     fake.add(FAPI, "fabric-api", version_id="FapiAAAA", client_side="required")
     fake.add(LITH, "lithium", version_id="LithBBBB", deps=[FAPI], client_side="optional")

@@ -195,6 +195,21 @@ MIGRATIONS: dict[int, list[str]] = {
         # NULL = not shown (added by hand, or already used).
         "ALTER TABLE player_access ADD COLUMN reveal_until REAL",
     ],
+    14: [
+        # Space used by each group, kept by the database itself. Checking the quota no
+        # longer adds up every block of the group for each block uploaded, and the check and the
+        # insert happen in the same transaction (two uploads at once cannot both slip under it).
+        "ALTER TABLE groups ADD COLUMN used_bytes INTEGER NOT NULL DEFAULT 0",
+        "UPDATE groups SET used_bytes = (SELECT COALESCE(SUM(stored_size), 0) FROM blobs"
+        " WHERE blobs.group_id = groups.id)",
+        "CREATE TRIGGER blobs_used_bytes_insert AFTER INSERT ON blobs BEGIN"
+        " UPDATE groups SET used_bytes = used_bytes + NEW.stored_size WHERE id = NEW.group_id; END",
+        "CREATE TRIGGER blobs_used_bytes_delete AFTER DELETE ON blobs BEGIN"
+        " UPDATE groups SET used_bytes = used_bytes - OLD.stored_size WHERE id = OLD.group_id; END",
+        "CREATE TRIGGER blobs_used_bytes_update AFTER UPDATE OF stored_size, group_id ON blobs BEGIN"
+        " UPDATE groups SET used_bytes = used_bytes - OLD.stored_size WHERE id = OLD.group_id;"
+        " UPDATE groups SET used_bytes = used_bytes + NEW.stored_size WHERE id = NEW.group_id; END",
+    ],
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 

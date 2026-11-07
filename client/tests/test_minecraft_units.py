@@ -165,3 +165,22 @@ def test_console_command_validation(cmd) -> None:
     with pytest.raises(CommandRejected):
         validate_command(cmd)
     assert validate_command("/whitelist add Steve") == "whitelist add Steve"
+
+
+def test_a_key_cannot_write_another_setting(tmp_path: Path) -> None:
+    path = tmp_path / "server.properties"
+    for key in ("x\nenable-rcon", "motd=x", "a:b", ""):
+        with pytest.raises(ValueError):
+            server_files.write_properties(path, {key: "true"}, port=25565)
+    assert not path.exists()
+
+
+def test_settings_from_the_control_plane_are_checked_again() -> None:
+    """A taken-over VPS still cannot turn RCON on or listen outside 127.0.0.1."""
+    from mdh_client.application.agent import _group_properties
+
+    server = {"properties": {"motd": "Salut", "pvp": False, "enable-rcon": True, "server-ip": "0.0.0.0",
+                             "max-players": 10_000, "difficulty": "hard\nenable-rcon=true",
+                             "x\nenable-rcon": "true"}}
+    assert _group_properties(server) == {"motd": "Salut", "pvp": False}
+    assert _group_properties({}) == {}

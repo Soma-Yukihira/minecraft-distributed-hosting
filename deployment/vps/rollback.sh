@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Undo install.sh, one step at a time (reverse order of installation) or all at once.
 #
-#   sudo bash rollback.sh firewall        remove the two UFW rules added by install.sh
+#   sudo bash rollback.sh firewall        remove the two UFW rules added by install.sh (8443, relay port)
 #   sudo bash rollback.sh nginx           remove the Nginx site (certificate kept: same address later)
 #   sudo bash rollback.sh app             stop and remove the service and its code
 #   sudo bash rollback.sh release         go back to the previous version and its database
@@ -25,7 +25,24 @@ SITE=/etc/nginx/sites-available/mdh
 SITE_LINK=/etc/nginx/sites-enabled/mdh
 API_PORT=8090
 HTTPS_PORT=8443
-RELAY_PORT=25565
+# Relay port: the one of the existing configuration (never rewritten), else MDH_RELAY_PORT for
+# a first installation, else 25565. The firewall rule always follows the service.
+relay_port() {
+    local p from_env="${MDH_RELAY_PORT:-}"
+    p="$(sed -n 's/^MDH_RELAY_PORT=//p' "$CONF/mdh.env" 2> /dev/null | tail -n 1)"
+    if [ -n "$p" ] && [ -n "$from_env" ] && [ "$p" != "$from_env" ]; then
+        printf '   !!  MDH_RELAY_PORT=%s ignoré : %s/mdh.env dit %s (modifie ce fichier pour changer)\n' \
+            "$from_env" "$CONF" "$p" >&2
+    fi
+    p="${p:-${from_env:-25565}}"
+    case "$p" in ''|*[!0-9]*) printf 'ERREUR : port du relais invalide : %s\n' "$p" >&2; return 1 ;; esac
+    if [ "$p" -lt 1024 ] || [ "$p" -gt 65535 ] || [ "$p" = "$API_PORT" ] || [ "$p" = "$HTTPS_PORT" ]; then
+        printf 'ERREUR : port du relais impossible : %s (1024-65535, ni %s ni %s)\n' "$p" "$API_PORT" "$HTTPS_PORT" >&2
+        return 1
+    fi
+    echo "$p"
+}
+RELAY_PORT="$(relay_port)"
 
 say()  { printf '\n== %s\n' "$*"; }
 ok()   { printf '   ok  %s\n' "$*"; }

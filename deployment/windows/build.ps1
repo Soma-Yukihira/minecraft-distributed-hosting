@@ -53,6 +53,21 @@ Write-Host ("Installer: {0} ({1:N0} MB)" -f (Resolve-Path $installer), ((Get-Ite
 # (or by GitHub Actions, .github/workflows/build-macos.yml) and copied into dist\macos\.
 $macZip = "dist\macos\MinecraftDistributedHosting-$version-macos-arm64.zip"
 $hasMac = Test-Path $macZip
+if ($hasMac) {
+    # Signing vouches for the file: it must be the one GitHub built (fingerprint shown in the
+    # summary of the run, and in SHA256SUMS next to it), not a copy changed on the way.
+    $macHash = (Get-FileHash -Algorithm SHA256 $macZip).Hash.ToLower()
+    Write-Host "Mac zip SHA-256: $macHash (compare with the summary of the GitHub run)"
+    $sums = "dist\macos\SHA256SUMS"
+    if (Test-Path $sums) {
+        $line = Select-String -Path $sums -SimpleMatch (Split-Path $macZip -Leaf) | Select-Object -First 1
+        if (-not $line -or $line.Line.Split(" ")[0].ToLower() -ne $macHash) {
+            throw "the Mac zip does not match SHA256SUMS from the GitHub build: not signed"
+        }
+    } else {
+        Write-Warning "No dist\macos\SHA256SUMS: check the fingerprint above against the GitHub run by hand."
+    }
+}
 if (Test-Path (Join-Path $HOME ".mdh-release\update-signing-key.pem")) {
     $toSign = @($installer)
     if ($hasMac) { $toSign += $macZip }

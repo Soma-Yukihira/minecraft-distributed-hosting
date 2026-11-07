@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,9 @@ FORCED_PROPERTIES: dict[str, str] = {
     # personal addresses, and Windows does not ask to open its firewall for Java.
     "server-ip": "127.0.0.1",
 }
+
+
+_KEY = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}")
 
 
 def _escape(value: str) -> str:
@@ -74,6 +78,8 @@ def write_properties(path: Path, group_properties: dict[str, Any], *, port: int,
         raise ValueError("port must be between 1024 and 65535")
     merged = read_properties(path)
     for key, value in group_properties.items():
+        if not _KEY.fullmatch(key):  # a "=", ":" or line break would write another setting
+            raise ValueError(f"invalid server.properties key {key!r}")
         merged[key] = _escape(_to_text(value))
     merged.update(FORCED_PROPERTIES)
     if allow_offline_accounts:

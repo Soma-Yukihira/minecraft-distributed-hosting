@@ -20,8 +20,11 @@ command -v "$PY" >/dev/null || { echo "Python 3.12 introuvable : https://www.pyt
 
 if [ ! -x .venv-mac/bin/python ]; then
     "$PY" -m venv .venv-mac
-    .venv-mac/bin/python -m pip install --quiet --upgrade pip
-    .venv-mac/bin/python -m pip install --quiet -e ./shared -e ./client pyinstaller
+    # Exact versions and SHA-256 of every package (lock_requirements.py): the same as the Windows
+    # build, and pip refuses any other file. The project itself comes from this checkout.
+    .venv-mac/bin/python -m pip install --quiet --require-hashes --only-binary=:all: --no-deps \
+        -r deployment/macos/requirements.txt
+    .venv-mac/bin/python -m pip install --quiet --no-deps --no-build-isolation -e ./shared -e ./client
 fi
 python=.venv-mac/bin/python
 export PYTHONPATH="$PWD/shared:$PWD/client"

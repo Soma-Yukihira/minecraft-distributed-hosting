@@ -29,6 +29,7 @@ from mdh_client.minecraft.modrinth import Modrinth, ModrinthError
 from mdh_client.minecraft.mods import ModInstaller, Status
 from mdh_shared.models.api import (ANTICHEAT_MOD_SLUG, FABRIC_ANTIXRAY_SLUG, MAP_MOD_SLUG, MAX_MODS,
                                    PREGEN_MOD_SLUG, Mod, Modpack)
+from mdh_shared.constants import WORLD_DIRS
 from mdh_shared.models.enums import Loader
 
 INDEX = "modrinth.index.json"
@@ -50,6 +51,8 @@ _MANAGED_FILES = frozenset({"server.properties", "eula.txt", "ops.json", "whitel
 #: Server tools: nothing for players to see in their game.
 #: Grim and the Fabric anti-X-ray work on the server only (Grim's page does not say so).
 _SERVER_TOOLS = frozenset({MAP_MOD_SLUG, PREGEN_MOD_SLUG, ANTICHEAT_MOD_SLUG, FABRIC_ANTIXRAY_SLUG})
+_MANAGED_DIRS_CF = frozenset(d.casefold() for d in _MANAGED_DIRS)
+_MANAGED_FILES_CF = frozenset(f.casefold() for f in _MANAGED_FILES)
 
 
 @dataclass
@@ -155,18 +158,30 @@ def _override_path(name: str) -> str | None:
     return None
 
 
-def _skipped(rel: str, worlds: set[str]) -> bool:
+def _world_dirs(level_name: str) -> set[str]:
+    """The group's world folders (Paper puts the Nether and the End next to it), case-folded."""
+    names = {*WORLD_DIRS, level_name, f"{level_name}_nether", f"{level_name}_the_end"}
+    return {n.casefold() for n in names}
+
+
+def _skipped(rel: str, worlds: set[str], level_name: str = "world") -> bool:
     parts = PurePosixPath(rel).parts
     if (not parts or rel.startswith("/") or "\\" in rel or any(p in ("", ".", "..") for p in parts)
             or ":" in parts[0]):
         return True  # outside the server folder
-    if parts[0] in _MANAGED_DIRS or parts[0] in worlds or (len(parts) == 1 and parts[0] in _MANAGED_FILES):
+    # Windows and macOS ignore case: "OPS.json" is ops.json, "World/" is the world.
+    top = parts[0].casefold()
+    if (top in _MANAGED_DIRS_CF or top in {w.casefold() for w in worlds} or top in _world_dirs(level_name)
+            or (len(parts) == 1 and top in _MANAGED_FILES_CF)):
         return True
     return PurePosixPath(rel).suffix.lower() in _PROGRAMS
 
 
-def apply_overrides(pack: Path, server_dir: Path) -> int:
-    """Copy the modpack's configuration files into the server folder. Returns how many."""
+def apply_overrides(pack: Path, server_dir: Path, level_name: str = "world") -> int:
+    """Copy the modpack's configuration files into the server folder. Returns how many.
+
+    Never a program, never a file the application manages, never anything in the group's world
+    (``level_name``), even when the modpack has a folder of the same name without level.dat."""
     manifest = server_dir / MANIFEST
     try:
         previous = set(json.loads(manifest.read_text("utf-8")))
@@ -183,12 +198,13 @@ def apply_overrides(pack: Path, server_dir: Path) -> int:
         chosen: dict[str, zipfile.ZipInfo] = {}
         for i in infos:  # server-overrides/ comes after overrides/ in the loop below: it wins
             rel = _override_path(i.filename)
-            if rel is not None and not i.is_dir() and i.filename.startswith("overrides/") and not _skipped(rel, worlds):
+            if rel is not None and not i.is_dir() and i.filename.startswith("overrides/") \
+                    and not _skipped(rel, worlds, level_name):
                 chosen[rel] = i
         for i in infos:
             rel = _override_path(i.filename)
             if rel is not None and not i.is_dir() and i.filename.startswith("server-overrides/") \
-                    and not _skipped(rel, worlds):
+                    and not _skipped(rel, worlds, level_name):
                 chosen[rel] = i
         if len(chosen) > MAX_OVERRIDE_FILES or sum(i.file_size for i in chosen.values()) > MAX_OVERRIDE_BYTES:
             raise _bad("ses fichiers de configuration sont trop nombreux ou trop gros.")
@@ -213,7 +229,9 @@ def apply_overrides(pack: Path, server_dir: Path) -> int:
             except OSError:
                 tmp.unlink(missing_ok=True)  # a name Windows refuses: skipped
     for rel in previous - set(written):  # left by another modpack (or an older version of it)
-        if not _skipped(rel, set()):
+        # Checked again with today's rules: a list written by an older version of the
+        # application may name files of the world, which must never be deleted.
+        if not _skipped(rel, set(), level_name):
             path = (server_dir / rel).resolve()
             if path.is_relative_to(root) and path.is_file():
                 path.unlink()
