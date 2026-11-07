@@ -44,7 +44,8 @@ async def update_host(host_id: str, body: HostUpdate, user: CurrentUser, ctx: Ct
     columns = {"display_name", "hosting_allowed", "auto_accept_offers", "max_ram_mb"}
     with immediate(ctx.conn):
         for key, value in changes.items():
-            assert key in columns  # guaranteed by the model; keeps the f-string below safe
+            if key not in columns:  # guaranteed by the model; keeps the f-string below safe
+                raise ValueError(f"unexpected host field {key!r}")  # never stripped, unlike assert
             ctx.conn.execute(f"UPDATE hosts SET {key} = ? WHERE id = ?",
                              (int(value) if isinstance(value, bool) else value, host_id))
     return host_info(ctx, owned_host(ctx.conn, host_id, user.user_id))

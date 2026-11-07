@@ -267,6 +267,7 @@ class Coordinator:
         self.stats.forget(server_id)
 
     async def broadcast(self, server_id: str) -> None:
+        self.ctx.relay.server_changed(server_id)  # players waiting on "Connexion…" look again
         status = self.status(server_id)
         await self.ctx.hub.send_to_group(
             self.conn,

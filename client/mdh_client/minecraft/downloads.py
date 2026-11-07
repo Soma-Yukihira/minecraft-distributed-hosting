@@ -83,7 +83,7 @@ async def fetch_json(client: httpx.AsyncClient, url: str, *, sha1: str | None = 
             body += chunk
             if len(body) > MAX_JSON_BYTES:
                 raise DownloadError(f"{url}: response too large")
-    if sha1 is not None and hashlib.sha1(body).hexdigest() != sha1.lower():
+    if sha1 is not None and hashlib.sha1(body, usedforsecurity=False).hexdigest() != sha1.lower():
         raise ChecksumMismatch(f"{url}: SHA-1 mismatch")
     try:
         return json.loads(body)
@@ -108,7 +108,7 @@ async def download(
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     h256 = hashlib.sha256()
-    h1 = hashlib.sha1()
+    h1 = hashlib.sha1(usedforsecurity=False)
     h512 = hashlib.sha512()
     received = 0
     try:

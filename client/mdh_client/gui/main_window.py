@@ -42,7 +42,6 @@ from mdh_shared.models.api import (MAP_MOD_SLUG, MOD_LOADERS, PREGEN_MOD_SLUG, S
                                    anticheat_enabled, anticheat_slugs)
 from mdh_shared.models.enums import Loader
 from mdh_client.gui.texts import MIGRATION_DETAILS, PHASE_LABELS, alert_text, error_text
-from mdh_client.gui.theme import COLORS
 from mdh_client.gui.widgets import Pill, human_bytes
 
 log = logging.getLogger("mdh.gui")

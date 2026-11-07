@@ -118,7 +118,7 @@ class LoginDialog(QDialog):
         self.username = QLineEdit(agent.settings.username or "")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.create = QCheckBox("Créer un nouveau compte")
+        self.new_account = QCheckBox("Créer un nouveau compte")
         self.invite = QLineEdit()
         self.invite.setPlaceholderText("Code reçu d'un membre du groupe")
         self.confirm = QLineEdit()
@@ -126,7 +126,7 @@ class LoginDialog(QDialog):
         form.addRow("Serveur central", self.url)
         form.addRow("Nom d'utilisateur", self.username)
         form.addRow("Mot de passe", self.password)
-        form.addRow("", self.create)
+        form.addRow("", self.new_account)
         self.invite_label = QLabel("Code d'invitation")
         self.confirm_label = QLabel("Confirmer")
         form.addRow(self.confirm_label, self.confirm)
@@ -140,7 +140,7 @@ class LoginDialog(QDialog):
         self.submit.setObjectName("Primary")
         self.submit.clicked.connect(self._submit)
         layout.addWidget(self.submit)
-        self.create.toggled.connect(self._toggle)
+        self.new_account.toggled.connect(self._toggle)
         self._toggle(False)
         self.password.returnPressed.connect(self._submit)
 
@@ -152,17 +152,17 @@ class LoginDialog(QDialog):
     def _submit(self) -> None:
         self.error.clear()
         username, password = self.username.text().strip(), self.password.text()
-        if self.create.isChecked() and password != self.confirm.text():
+        if self.new_account.isChecked() and password != self.confirm.text():
             self.error.setText("Les deux mots de passe sont différents.")
             return
-        if self.create.isChecked() and len(password) < 10:
+        if self.new_account.isChecked() and len(password) < 10:
             self.error.setText("Le mot de passe doit faire au moins 10 caractères.")
             return
         self.submit.setEnabled(False)
 
         async def go() -> Any:
             await self.agent.set_api_url(self.url.text().strip())
-            if self.create.isChecked():
+            if self.new_account.isChecked():
                 return await self.agent.register(username, password, self.invite.text().strip() or None)
             return await self.agent.login(username, password)
 

@@ -56,7 +56,7 @@ def main() -> int:
         app.installTranslator(translator)
 
     # One instance per Windows user: two agents would fight over the same PC identity.
-    running_signal = announce_running()
+    _running_mutex = announce_running()  # kept open until exit: the installer waits for it
     lock = QLockFile(str(layout.home / "instance.lock"))
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):

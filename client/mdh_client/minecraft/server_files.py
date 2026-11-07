@@ -142,7 +142,7 @@ def offline_uuid(name: str) -> str:
     import hashlib
     import uuid
 
-    return str(uuid.UUID(bytes=hashlib.md5(f"OfflinePlayer:{name}".encode()).digest(), version=3))
+    return str(uuid.UUID(bytes=hashlib.md5(f"OfflinePlayer:{name}".encode(), usedforsecurity=False).digest(), version=3))
 
 
 def write_offline_whitelist(server_dir: Path, names: list[str]) -> None:

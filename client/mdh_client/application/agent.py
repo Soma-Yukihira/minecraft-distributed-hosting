@@ -29,7 +29,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -1332,7 +1332,7 @@ class HostAgent:
             self.hosted = None
         self._phase(h, "released")
 
-    async def _final_backup(self, h: Hosted, label: str | None = None) -> str | bool:
+    async def _final_backup(self, h: Hosted, label: str | None = None) -> str | Literal[False]:
         """Upload the stopped world. Returns the version id, "" if nothing to do, False on failure."""
         if h.hot_task is not None:
             h.hot_task.cancel()

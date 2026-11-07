@@ -36,6 +36,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from mdh_server import access
 from mdh_server.api.errors import ApiError
 from mdh_server.api.ratelimit import RateLimiter
+from mdh_server.coordination.lease import LeaseState
 from mdh_server.coordination.lease_store import load as load_lease
 from mdh_server.relay import addresses, status_page
 from mdh_shared.models.api import TransferAddress
@@ -122,6 +123,8 @@ class Relay:
         self.transfers: dict[str, tuple[str, str, float]] = {}
         #: Players waiting on "Connexion…", per server.
         self.held: collections.Counter[str] = collections.Counter()
+        #: One event per waiting player, set when their server changes (see server_changed).
+        self._waiting: dict[str, set[asyncio.Event]] = {}
         self.hold_max_s = HOLD_MAX_S
         self.hold_query_every_s = HOLD_QUERY_EVERY_S
 
@@ -181,8 +184,9 @@ class Relay:
         now = self.ctx.now()
         for label in [k for k, (_, _, until) in self.transfers.items() if until <= now]:
             del self.transfers[label]
+        leases: dict[str, LeaseState] = {}  # one read per server, not per player
         for t in list(self.tunnels.values()):
-            lease = load_lease(self.ctx.conn, t.server_id)
+            lease = leases.get(t.server_id) or leases.setdefault(t.server_id, load_lease(self.ctx.conn, t.server_id))
             if lease.holder != t.host_id or lease.epoch != t.epoch or not lease.is_active(now):
                 self._cut(t, f"lease epoch {t.epoch} ended")
 
@@ -301,6 +305,8 @@ class Relay:
         if self.held[server_id] >= MAX_HELD_PER_SERVER:
             return srv
         self.held[server_id] += 1
+        changed = asyncio.Event()
+        self._waiting.setdefault(server_id, set()).add(changed)
         log.info("relay: %s waits for server %s (%s)", name, server_id, srv["state"])
         deadline = time.monotonic() + self.hold_max_s
         message_id = 0
@@ -313,18 +319,33 @@ class Relay:
                 if mc.parse_plugin_response(packet_id, payload) != message_id:
                     raise mc.ProtocolError("answer to another query")
                 next_query = time.monotonic() + self.hold_query_every_s
-                while time.monotonic() < min(next_query, deadline):
+                while (left := min(next_query, deadline) - time.monotonic()) > 0:
+                    changed.clear()  # before reading: a change from now on wakes us up
                     srv = self.ctx.conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
                     if srv is None or self._routable(srv):
                         return srv
                     if not self._holdable(srv):
                         return srv
-                    await asyncio.sleep(0.5)
+                    # Woken by the coordinator when the server changes, else read again at the
+                    # next query: no more reading the database twice a second per player.
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(changed.wait(), left)
             return srv
         finally:
+            waiting = self._waiting.get(server_id)
+            if waiting is not None:
+                waiting.discard(changed)
+                if not waiting:
+                    del self._waiting[server_id]
             self.held[server_id] -= 1
             if self.held[server_id] <= 0:
                 del self.held[server_id]
+
+    def server_changed(self, server_id: str) -> None:
+        """Called by the coordinator each time a server's state is broadcast: the players
+        waiting for it check at once whether they can go in."""
+        for event in self._waiting.get(server_id, ()):
+            event.set()
 
     def _refusal(self, srv, route: addresses.Route, name: str, peer: str) -> str | None:
         if srv is None:

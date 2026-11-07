@@ -50,7 +50,7 @@ async def from_url(client: httpx.AsyncClient, url: str, required: bool) -> Resou
     url = url.strip()
     if not url.startswith("https://") or len(url) > 1000 or any(ch.isspace() for ch in url):
         raise PackError("Le lien doit commencer par https:// et ne contenir aucun espace.")
-    sha1 = hashlib.sha1()
+    sha1 = hashlib.sha1(usedforsecurity=False)  # what Minecraft checks the pack with
     size = 0
     fd, tmp = tempfile.mkstemp(suffix=".zip")
     try:
