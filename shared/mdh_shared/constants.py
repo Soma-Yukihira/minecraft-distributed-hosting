@@ -12,7 +12,9 @@ API_VERSION: Final = "v1"
 #: 0.6.0: an older host would start a modpack without its configuration files, and could not
 #: read the pre-generation actions.
 #: 0.7.0: an older host would start without the group's datapacks and settings files.
-MIN_CLIENT_VERSION: Final = "0.7.0"
+#: 0.13.0: a Paper world synchronised by a 0.13 host has proxies.proxy-protocol on; an older host
+#: would not write the header in its tunnels, and Paper would refuse every player.
+MIN_CLIENT_VERSION: Final = "0.13.0"
 #: Oldest control plane the application works with. Raise it when the application relies on
 #: something only a newer control plane has (the VPS is updated before the application).
 #: 0.4.2: the server dialog always sends ``personal_addresses``, unknown to older ones.

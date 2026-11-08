@@ -59,6 +59,8 @@ tourner Minecraft lui-même.
 ### Modération et protection
 - Anti-triche côté serveur (Grim) et anti-X-ray.
 - Liste blanche, demandes d'accès, rôles (propriétaire, administrateur, modérateur, membre).
+- Transfert de la propriété d'un groupe ; départ d'un membre sans couper le serveur qu'il héberge.
+- Bannissement par adresse IP sur tous les types de serveur (Paper, Fabric, vanilla).
 - Expulsion, bannissement et commandes depuis l'application.
 - Protection des pseudos, y compris avec des comptes non officiels.
 
@@ -437,7 +439,9 @@ tools/         Test de charge
   son débit montant.
 - **Mods des joueurs non détectables** : aucun serveur Minecraft ne peut connaître les mods
   installés côté client. L'anti-triche agit sur les effets de la triche.
-- **Bannissements par IP inopérants** derrière le relais : le bannissement se fait par pseudo.
+- **Adresse IP des joueurs visible par Minecraft sur Paper seulement** : sur Fabric et vanilla, les
+  bannissements par IP sont appliqués par le PC hôte, et les plugins ou mods qui lisent l'adresse
+  d'un joueur y voient 127.0.0.1.
 - **macOS sur processeur Intel non pris en charge.**
 
 ---

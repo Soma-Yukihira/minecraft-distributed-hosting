@@ -104,9 +104,26 @@ def listen_for_players() -> None:
         data = s.encode("utf-8")
         return varint(len(data)) + data
 
+    # Like Paper with proxies.proxy-protocol: a PROXY v2 header first, or the connection is refused.
+    paper_global = cwd / "config" / "paper-global.yml"
+    proxy_protocol = paper_global.exists() and "  proxy-protocol: true" in paper_global.read_text("utf-8")
+
+    def read_proxy_header(conn) -> str:
+        head = recv_exact(conn, 16)
+        if head[:12] != b"\r\n\r\n\x00\r\nQUIT\n":
+            raise ConnectionError("no PROXY protocol header")
+        body = recv_exact(conn, int.from_bytes(head[14:16], "big"))
+        if head[12] == 0x20:                                 # LOCAL: the connection's own address
+            return "/127.0.0.1"
+        import ipaddress
+        size = 4 if head[13] == 0x11 else 16
+        ip = ipaddress.ip_address(body[:size])
+        return f"/{ip}:{int.from_bytes(body[2 * size:2 * size + 2], 'big')}"
+
     def handle(conn) -> None:
         with conn:
             try:
+                address = read_proxy_header(conn) if proxy_protocol else "/127.0.0.1"
                 _, handshake = read_packet(conn)
                 if handshake[-1] == 1:                       # status
                     read_packet(conn)
@@ -121,6 +138,7 @@ def listen_for_players() -> None:
                     return
                 _, login = read_packet(conn)                 # login start: name first
                 name = login[1:1 + login[0]].decode("utf-8")
+                out(f"{name}[{address}] logged in with entity id 1 at (0.5, 64.0, 0.5)")
                 out(f"{name} joined the game")
                 send_packet(conn, 0x02, string(name))        # stands for "login success"
                 try:

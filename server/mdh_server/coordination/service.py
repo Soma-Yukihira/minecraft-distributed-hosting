@@ -82,6 +82,12 @@ RUNTIME_TO_STATE = {
 #: Missing renewals for this many heartbeat intervals marks the host unreachable.
 UNREACHABLE_AFTER_INTERVALS = 2.5
 METRICS_HISTORY = 360  # one hour at one point every 10 s
+#: A member removed while hosting (docs/ARCHITECTURE.md 4.21): countdown announced to the players
+#: before the server moves or stops, how often to try again, and when the lease is no longer
+#: renewed (a PC that ignores the requests still loses the server, by its lease).
+DEPARTURE_COUNTDOWN_S = 60
+DEPARTURE_RETRY_S = 60.0
+DEPARTURE_DEADLINE_S = 1800.0
 
 
 class ProtocolError(Exception):
@@ -129,6 +135,8 @@ class Coordinator:
         #: Play time, busy hours, hosting time (docs/ARCHITECTURE.md 4.13), written now and then.
         self.stats = StatsRecorder()
         self.perf = PerfRecorder()
+        #: Last attempt to move a server off the PC of a leaving member.
+        self._departure_tried: dict[str, float] = {}
 
     # ------------------------------------------------------------------ helpers
 
@@ -648,6 +656,12 @@ class Coordinator:
     def _renew(self, server_id: str, host_id: str, epoch: int) -> tuple[LeaseState, bool]:
         now = self.ctx.now()
         restored = False
+        leaving = self.conn.execute(
+            "SELECT m.leaving_at FROM memberships m JOIN hosts h ON h.user_id = m.user_id"
+            " JOIN servers s ON s.group_id = m.group_id WHERE h.id = ? AND s.id = ?",
+            (host_id, server_id)).fetchone()
+        if leaving is not None and leaving[0] is not None and now - leaving[0] > DEPARTURE_DEADLINE_S:
+            raise lease_rules.LeaseExpired("the owner of this PC was removed from the group")
         with immediate(self.conn):
             new = lease_rules.renew(load_lease(self.conn, server_id), host_id, epoch, now,
                                     self.ctx.settings.lease)
@@ -944,6 +958,60 @@ class Coordinator:
             await self._maybe_preempt(r["id"], now)
 
         await self._stop_empty_servers(now)
+        await self._departures(now)
+
+    # ------------------------------------------------------------------ members leaving
+
+    def hosted_by(self, group_id: str, user_id: str) -> list[str]:
+        """Servers of the group whose lease a PC of that member holds right now. An expired lease
+        does not count: that PC can no longer write (a vanished PC leaves an orphaned server,
+        which an admin restarts from the last backup), so it must not hold the departure up."""
+        return [r[0] for r in self.conn.execute(
+            "SELECT l.server_id FROM leases l JOIN servers s ON s.id = l.server_id"
+            " JOIN hosts h ON h.id = l.holder_host_id WHERE s.group_id = ? AND h.user_id = ? AND l.expires_at > ?",
+            (group_id, user_id, self.ctx.now()))]
+
+    async def start_departure(self, group_id: str, user_id: str, actor_user_id: str) -> None:
+        """A member removed (or leaving) while hosting: no new hosting for them, and their servers
+        move to another PC, or stop when none can take them. ``_departures`` ends it."""
+        now = self.ctx.now()
+        with immediate(self.conn):
+            self.conn.execute(
+                "UPDATE memberships SET can_host = 0, leaving_at = COALESCE(leaving_at, ?),"
+                " leaving_by = COALESCE(leaving_by, ?) WHERE group_id = ? AND user_id = ?",
+                (now, actor_user_id, group_id, user_id))
+            events.record(self.conn, group_id=group_id, type="member_leaving", now=now,
+                          actor_user_id=actor_user_id, member_id=user_id)
+        await self._move_off(group_id, user_id, actor_user_id, now)
+        await self.ctx.hub.group_changed(self.conn, group_id)
+
+    async def _move_off(self, group_id: str, user_id: str, actor_user_id: str | None, now: float) -> None:
+        for server_id in self.hosted_by(group_id, user_id):
+            srv = self._server(server_id)
+            if (self.active_migration(server_id) is not None or not srv["desired_running"]
+                    or now - self._departure_tried.get(server_id, -math.inf) < DEPARTURE_RETRY_S):
+                continue  # already moving or stopping, or tried a moment ago
+            if ServerState(srv["state"]) != ServerState.RUNNING:
+                continue  # starting, or its PC is unreachable: tried again by the sweep
+            self._departure_tried[server_id] = now
+            try:
+                await self.request_transfer(server_id, target_host_id=None, countdown_s=DEPARTURE_COUNTDOWN_S,
+                                            reason=MigrationReason.TRANSFER, actor_user_id=actor_user_id)
+            except ApiError:  # no other PC can take it right now
+                await self.request_stop(server_id, actor_user_id, DEPARTURE_COUNTDOWN_S, reason="member_leaving")
+
+    async def _departures(self, now: float) -> None:
+        for r in self.conn.execute(
+                "SELECT group_id, user_id, leaving_by FROM memberships WHERE leaving_at IS NOT NULL").fetchall():
+            if self.hosted_by(r["group_id"], r["user_id"]):
+                await self._move_off(r["group_id"], r["user_id"], r["leaving_by"], now)
+                continue
+            with immediate(self.conn):
+                self.conn.execute("DELETE FROM memberships WHERE group_id = ? AND user_id = ?",
+                                  (r["group_id"], r["user_id"]))
+                events.record(self.conn, group_id=r["group_id"], type="member_removed", now=now,
+                              actor_user_id=r["leaving_by"], member_id=r["user_id"])
+            await self.ctx.hub.group_changed(self.conn, r["group_id"], r["user_id"])
 
     def _nobody_plays(self, server_id: str, now: float) -> bool:
         """Known to be empty: the host reported no player recently, and none comes through the

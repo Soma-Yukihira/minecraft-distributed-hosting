@@ -49,7 +49,7 @@ def test_owner_cannot_be_removed_and_admin_rules(world) -> None:
 def test_member_can_leave(world) -> None:
     h = world.h
     r = h.client.delete(f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}", headers=world.lea.headers)
-    assert r.status_code == 204
+    assert r.status_code == 200 and r.json() == {"pending": False}
     assert h.get(world.lea, f"/servers/{world.server_id}").status_code == 404
 
 
@@ -135,3 +135,57 @@ def test_minecraft_versions_accepted(world, version) -> None:
 def test_bad_minecraft_versions_rejected(world, version) -> None:
     r = world.h.post(world.oscar, f"/groups/{world.group_id}/servers", {"name": "v", "mc_version": version})
     assert r.status_code == 422
+
+
+def test_the_owner_hands_the_group_over(world) -> None:
+    from mdh_harness import PASSWORD  # same password for every test user
+
+    h = world.h
+    gid = world.group_id
+    url = f"/api/v1/groups/{gid}/owner"
+    # Only the owner, with their password, to a member of the group.
+    assert h.client.post(url, headers=world.lea.headers,
+                         json={"user_id": world.lea.user_id, "current_password": PASSWORD}).status_code == 403
+    assert h.client.post(url, headers=world.oscar.headers,
+                         json={"user_id": world.lea.user_id, "current_password": "wrong password"}).status_code == 401
+    assert h.client.post(url, headers=world.oscar.headers,
+                         json={"user_id": "f" * 32, "current_password": PASSWORD}).status_code == 404
+    assert h.client.post(url, headers=world.oscar.headers,
+                         json={"user_id": world.oscar.user_id, "current_password": PASSWORD}).status_code == 409
+    # Not through the role either.
+    r = h.client.patch(f"/api/v1/groups/{gid}/members/{world.lea.user_id}", headers=world.oscar.headers,
+                       json={"role": "owner"})
+    assert r.status_code == 403
+
+    r = h.client.post(url, headers=world.oscar.headers,
+                      json={"user_id": world.lea.user_id, "current_password": PASSWORD})
+    assert r.status_code == 204
+    roles = {m["username"]: m["role"] for m in h.get(world.oscar, f"/groups/{gid}/members").json()}
+    assert roles == {"lea": "owner", "oscar": "admin"}
+    assert h.ctx.conn.execute("SELECT owner_id FROM groups WHERE id = ?", (gid,)).fetchone()[0] == world.lea.user_id
+    # The former owner can leave now; the new one cannot.
+    r = h.client.delete(f"/api/v1/groups/{gid}/members/{world.lea.user_id}", headers=world.lea.headers)
+    assert r.status_code == 403
+    r = h.client.delete(f"/api/v1/groups/{gid}/members/{world.oscar.user_id}", headers=world.oscar.headers)
+    assert r.json() == {"pending": False}
+
+
+def test_the_handover_is_checked_again_after_the_password(world, monkeypatch) -> None:
+    """The member is removed while the password is checked: the group keeps its owner."""
+    from mdh_harness import PASSWORD
+
+    h = world.h
+    gid = world.group_id
+    verify = h.ctx.passwords.verify
+
+    async def slow_verify(encoded, password):
+        h.ctx.conn.execute("DELETE FROM memberships WHERE group_id = ? AND user_id = ?", (gid, world.lea.user_id))
+        return await verify(encoded, password)
+
+    monkeypatch.setattr(h.ctx.passwords, "verify", slow_verify)
+    r = h.client.post(f"/api/v1/groups/{gid}/owner", headers=world.oscar.headers,
+                      json={"user_id": world.lea.user_id, "current_password": PASSWORD})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "membership_changed"
+    assert h.ctx.conn.execute("SELECT owner_id FROM groups WHERE id = ?", (gid,)).fetchone()[0] == world.oscar.user_id
+    roles = {m["username"]: m["role"] for m in h.get(world.oscar, f"/groups/{gid}/members").json()}
+    assert roles == {"oscar": "owner"}

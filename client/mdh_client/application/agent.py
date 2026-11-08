@@ -37,14 +37,14 @@ from mdh_client import credentials
 from mdh_client.config import ClientSettings, Layout
 from mdh_client.coordination.lease_guard import LeaseGuard
 from mdh_client.application import templates
-from mdh_client.minecraft import (anticheat, bluemap, config_files, crash, datapacks, gamerules, jvm, modpack, pregen,
-                                  resource_pack, server_files)
+from mdh_client.minecraft import (anticheat, bluemap, config_files, crash, datapacks, gamerules, ip_bans, jvm, modpack,
+                                  pregen, proxy_protocol, resource_pack, server_files)
 from mdh_client.minecraft import mods as mod_files
 from mdh_client.minecraft.downloads import make_client
 from mdh_client.minecraft.modrinth import Modrinth, ModrinthError
 from mdh_client.minecraft.installer import Installer, PreparedServer
 from mdh_client.minecraft.log_parser import LogEvent
-from mdh_client.minecraft.process import MinecraftProcess, ProcessState
+from mdh_client.minecraft.process import CommandRejected, MinecraftProcess, ProcessState
 from mdh_client.monitoring import resources
 from mdh_client.minecraft.sources import SourceResolver
 from mdh_client.networking.api_client import ApiClient, ApiError, ApiUnavailable, check_base_url
@@ -61,6 +61,7 @@ from mdh_shared.models.api import (MAP_MOD_SLUG, MAX_CONFIG_FILE_BYTES, PREGEN_M
                                    CrashReport, Datapack, Mod, Modpack, PregenProgress, ResourcePack,
                                    SparkProfile, anticheat_enabled, anticheat_slugs, validate_properties)
 from mdh_shared.models.enums import Loader
+from mdh_shared.protocol import proxy
 from mdh_shared.protocol.messages import (
     ActionMessage,
     HeartbeatAck,
@@ -128,6 +129,12 @@ class Hosted:
     interrupt: asyncio.Event = field(default_factory=asyncio.Event)
     #: Players connected through the VPS relay (one task per connection).
     tunnels: set[asyncio.Task] = field(default_factory=set)
+    #: Minecraft reads a PROXY protocol header first (Paper): each tunnel must write one.
+    proxy_protocol: bool = False
+    #: Address of each player seen through the relay (lower-case name): "ban-ip <name>" uses it.
+    player_ips: dict[str, str] = field(default_factory=dict)
+    #: Minecraft's banned-ips.json of this server, enforced by the tunnels (any server type).
+    bans: ip_bans.BanList | None = None
     #: Re-reads the group's configuration after a server_update (one at a time; an update that
     #: arrives meanwhile sets config_dirty and is read by the same task).
     config_task: asyncio.Task | None = None
@@ -607,7 +614,18 @@ class HostAgent:
         url = self.api.ws_url.removesuffix("/ws") + f"/relay/data/{msg.conn_id}"
         try:
             port = self.settings.map_port if msg.target == "map" else self.settings.server_port
-            sent, received = await run_tunnel(url, msg.relay_token, port, self.api.ssl_context)
+            ip = ip_bans.normalize(str(msg.peer_ip)) if msg.peer_ip else None
+            if msg.target == "minecraft" and h.bans is not None and h.bans.bans(ip):
+                # Banned by address (docs/ARCHITECTURE.md 4.22): refused here, on every server type.
+                await run_tunnel(url, msg.relay_token, port, self.api.ssl_context, refuse=ip_bans.BANNED_MESSAGE)
+                log.info("relay connection %s refused: banned address", msg.conn_id)
+                return
+            if msg.player and ip:
+                h.player_ips[msg.player.lower()] = ip
+            # The player's address for Paper; LOCAL when the VPS did not say.
+            first = (proxy.header(ip, msg.peer_port, port)
+                     if msg.target == "minecraft" and h.proxy_protocol else b"")
+            sent, received = await run_tunnel(url, msg.relay_token, port, self.api.ssl_context, first=first)
             log.info("relay connection %s closed (%d kB in, %d kB out)", msg.conn_id, sent // 1024,
                      received // 1024)
         except asyncio.CancelledError:
@@ -744,10 +762,25 @@ class HostAgent:
             if Loader(h.server["loader"]) == Loader.PAPER or any(m.slug == SPARK_MOD_SLUG for m in _mods(h.server)):
                 h.profile = {"state": "running", "url": None}
                 await h.process.send(f"spark profiler start --timeout {a.seconds}")
+        elif a.kind == "ban_ip":
+            with contextlib.suppress(CommandRejected):  # already said in the console
+                await self._ban_ip(h, f"ban-ip {a.player}")
         else:
             verb = {"whitelist_add": "whitelist add", "whitelist_remove": "whitelist remove",
                     "op": "op", "deop": "deop", "kick": "kick", "ban": "ban", "pardon": "pardon"}[a.kind]
             await h.process.send(f"{verb} {a.player}")
+
+    async def _ban_ip(self, h: Hosted, command: str) -> None:
+        """``ban-ip``, always with the address the relay saw (Minecraft may only see 127.0.0.1). A
+        refusal is written in the console, which the admins of other PCs read too."""
+        assert h.process is not None
+        try:
+            commands = ip_bans.ban_commands(command, h.player_ips)
+        except CommandRejected as exc:
+            self._on_console_line(h, f"[Minecraft Distributed Hosting] commande refusée : {exc}")
+            raise
+        for c in commands:
+            await h.process.send(c)
 
     async def _start_pregen(self, h: Hosted, dimension: str, radius: int) -> None:
         """Fixed Chunky commands, once this PC has room for what they will write."""
@@ -890,6 +923,9 @@ class HostAgent:
         if loader == Loader.PAPER:  # after the group's files: the protection's own block wins
             await asyncio.to_thread(anticheat.configure_paper, directory, server["mc_version"],
                                     anticheat_enabled(mods))
+        # Also after the group's files: without it, a tunnel's header would break every connection.
+        h.proxy_protocol = await asyncio.to_thread(proxy_protocol.configure, directory, loader,
+                                                   server["mc_version"])
 
     def unapproved_mods(self, server: dict[str, Any]) -> list[Mod]:
         """Mods of that server this PC's user has not allowed yet: it hosts nothing until then."""
@@ -1036,6 +1072,9 @@ class HostAgent:
         directory = self.layout.server_dir(h.server_id)
         directory.mkdir(parents=True, exist_ok=True)
         offline = bool(server.get("allow_offline_accounts"))
+        if ip_bans.drop_loopback(directory):
+            log.warning("ban of 127.0.0.1 removed: behind the relay it would have shut every player out")
+        h.bans = ip_bans.BanList(directory)
         if server_files.reset_identities_if_auth_mode_changed(directory, offline):
             log.warning("account verification mode changed: whitelist identities rebuilt")
         # Chunky cannot pre-generate while Minecraft pauses an empty server (1.21.2+).
@@ -1680,7 +1719,7 @@ class HostAgent:
         h = self.hosted
         if h is None or h.process is None or not h.process.alive:
             raise RuntimeError("ce PC n'héberge pas de serveur en ce moment")
-        await h.process.send(command)
+        await self._ban_ip(h, command)  # any other command goes through unchanged
 
     def accept_eula(self) -> None:
         self.settings.eula_accepted_at = datetime.now(UTC).isoformat(timespec="seconds")

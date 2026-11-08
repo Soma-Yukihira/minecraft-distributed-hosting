@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress, TypeAdapter
 
 from mdh_shared.constants import MAX_WS_MESSAGE_BYTES
 from mdh_shared.models.api import ClientPlatform, Id, PlayerName, PregenDimension, PregenProgress, SparkProfile
@@ -162,7 +162,9 @@ class Announce(_Msg):
 
 
 class PlayerAction(_Msg):
-    kind: Literal["whitelist_add", "whitelist_remove", "op", "deop", "kick", "ban", "pardon"]
+    #: ban_ip (0.13.0): the address the player connects from, whatever the server type (the
+    #: hosting PC knows it from the relay, docs/ARCHITECTURE.md 4.22).
+    kind: Literal["whitelist_add", "whitelist_remove", "op", "deop", "kick", "ban", "pardon", "ban_ip"]
     player: PlayerName
 
 
@@ -213,6 +215,13 @@ class RelayOpen(_Msg):
     transport: Literal["tcp", "udp"] = "tcp"
     #: minecraft: a player; map: a browser showing the world map (BlueMap's local web server).
     target: Literal["minecraft", "map"] = "minecraft"
+    #: The player's address (0.13.0, sent only to applications that know these fields): written in
+    #: front of the connection (PROXY protocol), so Minecraft sees who connects and IP bans work.
+    peer_ip: IPvAnyAddress | None = None
+    peer_port: int | None = Field(default=None, ge=0, le=65535)
+    #: The player who logs in (None for a server-list ping): lets the PC turn "ban-ip <name>" into
+    #: the player's real address on servers that cannot read it themselves (Fabric, vanilla).
+    player: PlayerName | None = None
 
 
 class ServerUpdate(_Msg):

@@ -584,8 +584,8 @@ class ServerPage(QWidget):
         left.addWidget(self.players)
         # Closed list of actions, carried out by the hosting PC: no free command from afar.
         self.admin_buttons: dict[str, QPushButton] = {}
-        for kind, label in (("kick", "Expulser"), ("ban", "Bannir"), ("op", "Nommer opérateur"),
-                            ("deop", "Retirer opérateur")):
+        for kind, label in (("kick", "Expulser"), ("ban", "Bannir"), ("ban_ip", "Bannir l'IP"),
+                            ("op", "Nommer opérateur"), ("deop", "Retirer opérateur")):
             btn = QPushButton(label)
             btn.setMaximumWidth(220)
             btn.clicked.connect(lambda _=False, k=kind: self._player_action(k))
@@ -773,7 +773,7 @@ class ServerPage(QWidget):
         self._remote_view = remote
         chosen = self._selected_player()
         for kind, btn in self.admin_buttons.items():
-            allowed = s.can_moderate if kind in ("kick", "ban") else s.is_admin
+            allowed = s.can_moderate if kind in ("kick", "ban", "ban_ip") else s.is_admin
             btn.setVisible(bool(has and allowed))
             btn.setEnabled(bool(running and allowed and chosen))
         self.pardon_btn.setVisible(bool(has and s.can_moderate))
@@ -832,8 +832,8 @@ class GroupPage(QWidget):
 
         members_box = QGroupBox("Membres")
         mb = QVBoxLayout(members_box)
-        self.members = QTableWidget(0, 3)
-        self.members.setHorizontalHeaderLabels(["Nom", "Rôle", "Peut héberger"])
+        self.members = QTableWidget(0, 4)
+        self.members.setHorizontalHeaderLabels(["Nom", "Rôle", "Peut héberger", ""])
         self.members.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.members.verticalHeader().setVisible(False)
         self.members.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -856,7 +856,8 @@ class GroupPage(QWidget):
                                 "PC pouvant héberger (le plus prioritaire disponible est choisi)")
         # Rebuild tables only when data changed, so a periodic refresh never resets a field the
         # user is editing.
-        snapshot = (repr(s.hosts), repr(s.members), s.is_admin)
+        snapshot = (repr(s.hosts), repr(s.members), s.is_admin, (s.group or {}).get("role"),
+                    (s.user or {}).get("user_id"))
         if snapshot != getattr(self, "_snapshot", None):
             self._snapshot = snapshot
             self._fill_tables(s)
@@ -907,11 +908,50 @@ class GroupPage(QWidget):
             else:
                 self.members.removeCellWidget(r, 1)
                 self.members.setItem(r, 1, QTableWidgetItem(ROLE_LABELS.get(m["role"], m["role"])))
+            leaving = bool(m.get("leaving"))
+            if leaving:  # removed, while their PC still hosts: nothing to change meanwhile
+                self.members.removeCellWidget(r, 1)
+                self.members.setItem(r, 1, QTableWidgetItem(ROLE_LABELS.get(m["role"], m["role"])))
             box = QCheckBox()
             box.setChecked(m["can_host"])
-            box.setEnabled(s.is_admin and m["role"] != "owner")
+            box.setEnabled(s.is_admin and m["role"] != "owner" and not leaving)
             box.toggled.connect(lambda checked, uid=m["user_id"]: self.win.set_can_host(uid, checked))
             self.members.setCellWidget(r, 2, box)
+            self._member_actions(r, m, s, owner, leaving)
+
+    def _member_actions(self, r: int, m: dict, s: AppState, owner: bool, leaving: bool) -> None:
+        """Leave the group, remove a member, hand the group over (the control plane checks it again)."""
+        self.members.removeCellWidget(r, 3)
+        self.members.setItem(r, 3, QTableWidgetItem(""))
+        if leaving:
+            item = QTableWidgetItem("Départ en cours…")
+            item.setToolTip("Son PC héberge un serveur du groupe : le serveur passe d'abord sur un autre PC "
+                            "(ou s'arrête), puis le départ se termine tout seul.")
+            self.members.setItem(r, 3, item)
+            return
+        me = m["user_id"] == (s.user or {}).get("user_id")
+        buttons: list[QPushButton] = []
+        if me and m["role"] != "owner":
+            leave = QPushButton("Quitter le groupe")
+            leave.clicked.connect(lambda _=False, uid=m["user_id"], n=m["username"]: self.win.remove_member(uid, n))
+            buttons.append(leave)
+        if not me and owner:
+            give = QPushButton("Rendre propriétaire")
+            give.setToolTip("Lui donner le groupe : tu restes administrateur.")
+            give.clicked.connect(lambda _=False, uid=m["user_id"], n=m["username"]:
+                                 self.win.transfer_ownership(uid, n))
+            buttons.append(give)
+        if not me and m["role"] != "owner" and (owner or (s.is_admin and m["role"] in ("member", "moderator"))):
+            remove = QPushButton("Retirer")
+            remove.clicked.connect(lambda _=False, uid=m["user_id"], n=m["username"]: self.win.remove_member(uid, n))
+            buttons.append(remove)
+        if buttons:
+            cell = QWidget()
+            row = QHBoxLayout(cell)
+            row.setContentsMargins(0, 0, 0, 0)
+            for b in buttons:
+                row.addWidget(b)
+            self.members.setCellWidget(r, 3, cell)
 
 
 KIND_LABELS = {"final": "Fin de session", "hot": "Automatique", "manual": "Manuelle", "restore": "Restauration"}

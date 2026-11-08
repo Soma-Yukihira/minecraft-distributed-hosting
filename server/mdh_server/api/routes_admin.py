@@ -33,7 +33,7 @@ MAX_LINES = 100
 #: Console lines kept per server (a modded start writes a few hundred).
 MAX_CONSOLE_LINES = 1000
 #: What moderators may do: run the game, never change who is operator or allowed.
-MODERATOR_ACTIONS = frozenset({"announce", "kick", "ban", "pardon"})
+MODERATOR_ACTIONS = frozenset({"announce", "kick", "ban", "pardon", "ban_ip"})
 
 
 class ActionRequest(BaseModel):

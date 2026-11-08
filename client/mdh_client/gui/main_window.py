@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMainWindow,
     QMessageBox,
@@ -153,6 +154,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Prêt")
 
         self._mod_checks: dict[str, tuple[tuple, float]] = {}
+        #: Mod updates already announced by a notification (server, mods, how many).
+        self._mod_updates_told: set[tuple[str, tuple, int]] = set()
         self.status_timer = QTimer(self, interval=3000, timeout=self.refresh_server)
         self.details_timer = QTimer(self, interval=10000, timeout=self.refresh_details)
         # Installs a ready update by itself once the window is closed and nothing is hosted.
@@ -467,6 +470,14 @@ class MainWindow(QMainWindow):
         def found(result: tuple) -> None:
             mods, changes = result
             self.state.mod_updates[srv["server_id"]] = {"key": key, "mods": mods, "changes": changes}
+            # Said once per set of updates: the button of the server page keeps showing them.
+            seen = (srv["server_id"], key, len(changes))
+            if changes and seen not in self._mod_updates_told:
+                self._mod_updates_told.add(seen)
+                word = "plugin(s)" if srv.get("loader") == "paper" else "mod(s)"
+                self.tray.showMessage(f"Mises à jour pour « {srv['name']} »",
+                                      f"{len(changes)} {word} ont une nouvelle version sur Modrinth (page Serveur, "
+                                      "bouton Mods). Chaque PC donnera son accord avant de l'utiliser.")
             self.render()
 
         self.bridge.run(self.agent.mod_updates(srv), on_ok=found, on_error=lambda e: None)
@@ -808,11 +819,16 @@ class MainWindow(QMainWindow):
         srv = self.state.server
         if not srv:
             return
-        labels = {"kick": "expulsé", "ban": "banni", "pardon": "débanni", "op": "nommé opérateur",
-                  "deop": "n'est plus opérateur"}
-        if kind in ("kick", "ban") and QMessageBox.question(
-                self, "Confirmer", f"{'Expulser' if kind == 'kick' else 'Bannir'} {player} ?"
-                + ("\nIl ne pourra plus revenir tant qu'il n'est pas débanni." if kind == "ban" else "")) \
+        labels = {"kick": "expulsé", "ban": "banni", "ban_ip": "adresse IP bannie", "pardon": "débanni",
+                  "op": "nommé opérateur", "deop": "n'est plus opérateur"}
+        questions = {
+            "kick": f"Expulser {player} ?",
+            "ban": f"Bannir {player} ?\nIl ne pourra plus revenir tant qu'il n'est pas débanni.",
+            "ban_ip": f"Bannir l'adresse IP de {player} ?\nPlus personne ne pourra se connecter depuis cette "
+                      "adresse (souvent toute sa maison), même avec un autre compte. Pour l'annuler : "
+                      "« deban-ip <adresse ou pseudo> » dans la console du PC qui héberge.",
+        }
+        if kind in questions and QMessageBox.question(self, "Confirmer", questions[kind]) \
                 != QMessageBox.StandardButton.Yes:
             return
         action: dict[str, Any] = {"kind": kind}
@@ -1115,6 +1131,51 @@ class MainWindow(QMainWindow):
             self.agent.approve_mods(blocked)
             self.statusBar().showMessage("Mods autorisés sur ce PC", 8000)
             self.render()
+
+    def remove_member(self, user_id: str, username: str) -> None:
+        """Remove someone from the group, or leave it (``user_id`` = this account)."""
+        group = self.state.group
+        if not group:
+            return
+        me = user_id == (self.state.user or {}).get("user_id")
+        question = (f"Quitter le groupe « {group['name']} » ? Tu n'auras plus accès à ses serveurs ; il faudra "
+                    "une nouvelle invitation pour revenir." if me else
+                    f"Retirer {username} du groupe « {group['name']} » ? Ses PC n'hébergeront plus les serveurs du "
+                    "groupe ; une nouvelle invitation sera nécessaire pour revenir.")
+        title = "Quitter le groupe" if me else "Retirer un membre"
+        if QMessageBox.question(self, title, question) != QMessageBox.StandardButton.Yes:
+            return
+
+        def done(pending: bool) -> None:
+            if pending:
+                QMessageBox.information(
+                    self, "Départ en cours",
+                    ("Ton PC" if me else f"Le PC de {username}") + " héberge un serveur du groupe : il passe "
+                    "d'abord sur un autre PC (ou s'arrête si aucun ne peut le prendre), avec une minute "
+                    "d'annonce aux joueurs. Le départ se termine tout seul ensuite.")
+            if me and not pending:
+                self.reload_groups()
+            else:
+                self.refresh_details()
+
+        self.run(self.agent.api.remove_member(group["group_id"], user_id), done,
+                 None if me else f"{username} retiré du groupe")
+
+    def transfer_ownership(self, user_id: str, username: str) -> None:
+        group = self.state.group
+        if not group:
+            return
+        if QMessageBox.question(
+                self, "Transférer la propriété",
+                f"Donner le groupe « {group['name']} » à {username} ?\n\nIl ou elle pourra tout faire, y compris "
+                "nommer et retirer les administrateurs. Tu restes dans le groupe comme administrateur, et "
+                "seul le nouveau propriétaire pourra te rendre le groupe.") != QMessageBox.StandardButton.Yes:
+            return
+        password, ok = QInputDialog.getText(self, "Transférer la propriété", "Ton mot de passe, pour confirmer :",
+                                            QLineEdit.EchoMode.Password)
+        if ok and password:
+            self.run(self.agent.api.transfer_ownership(group["group_id"], user_id, password),
+                     lambda _: self.reload_groups(group["group_id"]), f"{username} est maintenant propriétaire")
 
     def set_can_host(self, user_id: str, allowed: bool) -> None:
         group = self.state.group

@@ -75,7 +75,8 @@ def test_v7_migration_keeps_members_and_allows_moderators(tmp_path) -> None:
         conn.execute("INSERT INTO memberships VALUES ('g1', 'u2', 'member', 0, 6)")
     migrate(conn)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == max(MIGRATIONS)
-    rows = [tuple(r) for r in conn.execute("SELECT * FROM memberships ORDER BY user_id")]
+    rows = [tuple(r) for r in conn.execute("SELECT group_id, user_id, role, can_host, joined_at FROM memberships"
+                                           " ORDER BY user_id")]
     assert rows == [("g1", "u1", "owner", 1, 5.0), ("g1", "u2", "member", 0, 6.0)]
     conn.execute("UPDATE memberships SET role = 'moderator' WHERE user_id = 'u2'")
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []

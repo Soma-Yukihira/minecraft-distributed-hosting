@@ -57,7 +57,8 @@ async def _authenticate(ctx: AppContext, websocket: WebSocket) -> Session | int:
         log.info("refused application %r of user %s (minimum %s)", hello.client_version,
                  user.username, MIN_CLIENT_VERSION)
         return CLIENT_TOO_OLD
-    return Session(uuid.uuid4().hex, user.user_id, hello.host_id, websocket)
+    return Session(uuid.uuid4().hex, user.user_id, hello.host_id, websocket,
+                   client_version=hello.client_version)
 
 
 @router.websocket("/ws")

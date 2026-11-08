@@ -1014,3 +1014,44 @@ def test_the_check_for_updates_button(qapp):
     answers.append(RuntimeError("serveur central injoignable"))
     main_window.MainWindow.check_updates(fake)
     assert page.check_result.startswith("Vérification impossible") and page.check_btn.text() == "Vérifier les mises à jour"
+
+
+def test_members_can_leave_be_removed_or_be_handed_the_group(qapp):
+    from types import SimpleNamespace
+
+    from mdh_client.gui.pages import AppState, GroupPage
+
+    calls = []
+    win = SimpleNamespace(create_invite=lambda: None, join_group=lambda: None, create_group=lambda: None,
+                          set_role=lambda *a: None, set_can_host=lambda *a: None, set_priority=lambda *a: None,
+                          remove_member=lambda uid, name: calls.append(("remove", name)),
+                          transfer_ownership=lambda uid, name: calls.append(("owner", name)))
+    page = GroupPage(win)
+    people = [{"user_id": "a" * 32, "username": "oscar", "role": "owner", "can_host": True, "hosts": []},
+              {"user_id": "b" * 32, "username": "lea", "role": "admin", "can_host": True, "hosts": []},
+              {"user_id": "c" * 32, "username": "tom", "role": "member", "can_host": True, "hosts": []},
+              {"user_id": "d" * 32, "username": "eve", "role": "member", "can_host": False, "hosts": [],
+               "leaving": True}]
+
+    def actions(me: str, role: str) -> dict[str, list[str]]:
+        state = AppState(user={"user_id": me}, group={"group_id": "g" * 32, "name": "Amis", "role": role},
+                         members=people)
+        page.refresh(state)
+        found = {}
+        for r, m in enumerate(people):
+            cell = page.members.cellWidget(r, 3)
+            found[m["username"]] = ([b.text() for b in cell.findChildren(QPushButton)] if cell else
+                                    [page.members.item(r, 3).text()] if page.members.item(r, 3).text() else [])
+        return found
+
+    # The owner hands the group over or removes anyone; the one leaving shows as such.
+    assert actions("a" * 32, "owner") == {"oscar": [], "lea": ["Rendre propriétaire", "Retirer"],
+                                          "tom": ["Rendre propriétaire", "Retirer"], "eve": ["Départ en cours…"]}
+    # An admin removes members (not another admin), and leaves.
+    assert actions("b" * 32, "admin") == {"oscar": [], "lea": ["Quitter le groupe"], "tom": ["Retirer"],
+                                          "eve": ["Départ en cours…"]}
+    # A member can only leave.
+    assert actions("c" * 32, "member") == {"oscar": [], "lea": [], "tom": ["Quitter le groupe"],
+                                           "eve": ["Départ en cours…"]}
+    page.members.cellWidget(2, 3).findChildren(QPushButton)[0].click()
+    assert calls == [("remove", "tom")]

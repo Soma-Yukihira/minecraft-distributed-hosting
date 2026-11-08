@@ -5,11 +5,12 @@ from __future__ import annotations
 import secrets
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 
 from mdh_server import events
 from mdh_server.api.errors import ApiError, conflict, forbidden
-from mdh_server.api.routes_auth import consume_invite, find_valid_invite
+from mdh_server.api.ratelimit import client_ip
+from mdh_server.api.routes_auth import consume_invite, find_valid_invite, user_limits
 from mdh_server.auth import tokens
 from mdh_server.auth.deps import Ctx, CurrentUser, membership
 from mdh_server.database.db import immediate
@@ -21,7 +22,9 @@ from mdh_shared.models.api import (
     InviteInfo,
     JoinRequest,
     MemberInfo,
+    MemberRemoval,
     MemberUpdate,
+    OwnershipTransfer,
 )
 from mdh_shared.models.enums import Role
 
@@ -102,15 +105,15 @@ async def join_group(body: JoinRequest, user: CurrentUser, ctx: Ctx) -> GroupInf
 async def list_members(group_id: str, user: CurrentUser, ctx: Ctx) -> list[MemberInfo]:
     membership(ctx.conn, group_id, user.user_id)
     members = ctx.conn.execute(
-        "SELECT u.id, u.username, m.role, m.can_host FROM memberships m JOIN users u ON u.id = m.user_id"
-        " WHERE m.group_id = ? ORDER BY u.username", (group_id,)).fetchall()
+        "SELECT u.id, u.username, m.role, m.can_host, m.leaving_at FROM memberships m"
+        " JOIN users u ON u.id = m.user_id WHERE m.group_id = ? ORDER BY u.username", (group_id,)).fetchall()
     result = []
     for m in members:
         hosts = ctx.conn.execute("SELECT * FROM hosts WHERE user_id = ? ORDER BY display_name",
                                  (m["id"],)).fetchall()
         result.append(MemberInfo(
             user_id=m["id"], username=m["username"], role=Role(m["role"]), can_host=bool(m["can_host"]),
-            hosts=[host_info(ctx, h) for h in hosts]))
+            hosts=[host_info(ctx, h) for h in hosts], leaving=m["leaving_at"] is not None))
     return result
 
 
@@ -130,7 +133,10 @@ async def update_member(group_id: str, member_id: str, body: MemberUpdate, user:
     if target.role == Role.OWNER and member_id != user.user_id:
         raise forbidden("only the owner can change the owner's membership")
     if body.role == Role.OWNER:
-        raise forbidden("ownership transfer is not supported yet")
+        raise forbidden("ownership goes through POST /groups/{group_id}/owner")
+    if ctx.conn.execute("SELECT leaving_at FROM memberships WHERE group_id = ? AND user_id = ?",
+                        (group_id, member_id)).fetchone()["leaving_at"] is not None:
+        raise conflict("member_leaving", "this member is leaving the group")
     if target.role == Role.OWNER and body.role is not None:
         raise forbidden("the owner cannot demote themselves; the group needs an owner")
     if body.role == Role.ADMIN and caller.role != Role.OWNER:
@@ -152,26 +158,69 @@ async def update_member(group_id: str, member_id: str, body: MemberUpdate, user:
     return Response(status_code=204)
 
 
-@router.delete("/groups/{group_id}/members/{member_id}", status_code=204)
-async def remove_member(group_id: str, member_id: str, user: CurrentUser, ctx: Ctx) -> Response:
+@router.post("/groups/{group_id}/owner", status_code=204)
+async def transfer_ownership(group_id: str, body: OwnershipTransfer, request: Request, user: CurrentUser,
+                             ctx: Ctx) -> Response:
+    """The owner hands the group over to another member, and stays in it as an admin."""
+    caller = membership(ctx.conn, group_id, user.user_id)
+    if caller.role != Role.OWNER:
+        raise forbidden("only the owner can hand the group over")
+    if body.user_id == user.user_id:
+        raise conflict("already_owner", "you already own this group")
+    target = membership(ctx.conn, group_id, body.user_id)
+    if ctx.conn.execute("SELECT leaving_at FROM memberships WHERE group_id = ? AND user_id = ?",
+                        (group_id, target.user_id)).fetchone()["leaving_at"] is not None:
+        raise conflict("member_leaving", "this member is leaving the group")
+    user_limits(ctx, user.username, client_ip(request, ctx.settings.trusted_proxies))
+    row = ctx.conn.execute("SELECT password_hash FROM users WHERE id = ?", (user.user_id,)).fetchone()
+    if not await ctx.passwords.verify(row["password_hash"], body.current_password):
+        raise ApiError(401, "invalid_credentials", "wrong current password")
+    with immediate(ctx.conn):
+        # Checked again here: the password check took a while, and the member could have been
+        # removed (or the group handed over) meanwhile. The group must never end up ownerless.
+        roles = {r["user_id"]: r["role"] for r in ctx.conn.execute(
+            "SELECT user_id, role FROM memberships WHERE group_id = ? AND user_id IN (?, ?) AND leaving_at IS NULL",
+            (group_id, user.user_id, target.user_id))}
+        if roles.get(user.user_id) != Role.OWNER.value or target.user_id not in roles:
+            raise conflict("membership_changed", "the group changed meanwhile, try again")
+        owned = ctx.conn.execute("SELECT COUNT(*) FROM groups WHERE owner_id = ?", (target.user_id,)).fetchone()[0]
+        if owned >= MAX_GROUPS_PER_USER:
+            raise ApiError(403, "limit_reached", f"this member already owns {MAX_GROUPS_PER_USER} groups")
+        ctx.conn.execute("UPDATE memberships SET role = 'admin' WHERE group_id = ? AND user_id = ?",
+                         (group_id, user.user_id))
+        ctx.conn.execute("UPDATE memberships SET role = 'owner' WHERE group_id = ? AND user_id = ?",
+                         (group_id, target.user_id))
+        ctx.conn.execute("UPDATE groups SET owner_id = ? WHERE id = ?", (target.user_id, group_id))
+        events.record(ctx.conn, group_id=group_id, type="owner_transferred", now=ctx.now(),
+                      actor_user_id=user.user_id, member_id=target.user_id)
+    await ctx.hub.group_changed(ctx.conn, group_id)
+    return Response(status_code=204)
+
+
+@router.delete("/groups/{group_id}/members/{member_id}")
+async def remove_member(group_id: str, member_id: str, user: CurrentUser, ctx: Ctx) -> MemberRemoval:
+    """Remove a member (an admin), or leave the group (anyone but the owner).
+
+    A member whose PC hosts a server of the group is not cut off: the server first moves to another
+    PC (or stops when none can take it), then the member goes (docs/ARCHITECTURE.md 4.21)."""
     caller = membership(ctx.conn, group_id, user.user_id)
     if member_id != user.user_id:
         caller.require_admin()
     target = membership(ctx.conn, group_id, member_id)
     if target.role == Role.OWNER:
-        raise forbidden("the owner cannot leave or be removed from the group")
+        raise forbidden("the owner cannot leave or be removed from the group: hand it over first")
     if target.role == Role.ADMIN and caller.role != Role.OWNER and member_id != user.user_id:
         raise forbidden("only the owner can remove an admin")
-    hosting = ctx.conn.execute(
-        "SELECT 1 FROM leases l JOIN servers s ON s.id = l.server_id JOIN hosts h ON h.id = l.holder_host_id"
-        " WHERE s.group_id = ? AND h.user_id = ?", (group_id, member_id)).fetchone()
-    if hosting:
-        # Phase 5 will migrate automatically; until then, never cut a running host off.
-        raise conflict("member_is_hosting", "this member is hosting a server: stop or transfer it first")
+    if ctx.conn.execute("SELECT leaving_at FROM memberships WHERE group_id = ? AND user_id = ?",
+                        (group_id, member_id)).fetchone()["leaving_at"] is not None:
+        return MemberRemoval(pending=True)  # already on the way out: nothing to start again
+    if ctx.coordinator.hosted_by(group_id, member_id):
+        await ctx.coordinator.start_departure(group_id, member_id, user.user_id)
+        return MemberRemoval(pending=True)
     with immediate(ctx.conn):
         ctx.conn.execute("DELETE FROM memberships WHERE group_id = ? AND user_id = ?",
                          (group_id, member_id))
         events.record(ctx.conn, group_id=group_id, type="member_removed", now=ctx.now(),
                       actor_user_id=user.user_id, member_id=member_id)
     await ctx.hub.group_changed(ctx.conn, group_id, member_id)
-    return Response(status_code=204)
+    return MemberRemoval(pending=False)

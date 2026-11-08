@@ -39,6 +39,7 @@ from mdh_server.api.ratelimit import RateLimiter
 from mdh_server.coordination.lease import LeaseState
 from mdh_server.coordination.lease_store import load as load_lease
 from mdh_server.relay import addresses, status_page
+from mdh_shared import versions
 from mdh_shared.models.api import TransferAddress
 from mdh_shared.models.enums import HostRuntimeState, ServerState
 from mdh_shared.protocol import minecraft as mc
@@ -63,6 +64,8 @@ HOLD_STATES = frozenset({ServerState.ELECTING, ServerState.ASSIGNED, ServerState
 #: Validity of a transfer address (ARCHITECTURE 4.18).
 TRANSFER_VALID_S = 300.0
 TRANSFER_PREFIX = "t"
+#: First application that reads the player's address in ``relay_open`` (PROXY protocol).
+PROXY_PROTOCOL_CLIENT = "0.13.0"
 
 STATE_TEXT = {
     ServerState.OFFLINE: "Serveur arrêté : démarre-le depuis l'application du groupe.",
@@ -551,7 +554,8 @@ class Relay:
         self.tunnels[t.conn_id] = t
         try:
             sent = await self.ctx.hub.send_to_host(t.host_id, RelayOpen(
-                conn_id=t.conn_id, server_id=t.server_id, epoch=t.epoch, relay_token=t.token))
+                conn_id=t.conn_id, server_id=t.server_id, epoch=t.epoch, relay_token=t.token,
+                **self._peer_fields(t.host_id, writer, player)))
             ws: WebSocket | None = None
             if sent:
                 with contextlib.suppress(TimeoutError):
@@ -571,6 +575,18 @@ class Relay:
             if player is not None:
                 log.info("relay: %s left server %s (%d s, %d kB up, %d kB down)", player, t.server_id,
                          time.monotonic() - t.started, t.bytes_up // 1024, t.bytes_down // 1024)
+
+    def _peer_fields(self, host_id: str, writer: asyncio.StreamWriter, player: str | None) -> dict:
+        """The player's address for the host (PROXY protocol, docs/ARCHITECTURE.md 4.22), only to
+        applications that know these fields: an older one would refuse the whole message."""
+        session = self.ctx.hub.host_session(host_id)
+        peer = writer.get_extra_info("peername") or ()
+        if (session is None or len(peer) < 2
+                or versions.older_than(session.client_version, PROXY_PROTOCOL_CLIENT)):
+            return {}
+        # A name Minecraft would not accept (a modified client) is simply not passed on.
+        named = player if player is not None and access.PLAYER_NAME.fullmatch(player) else None
+        return {"peer_ip": peer[0], "peer_port": peer[1], "player": named}
 
     @staticmethod
     async def _pump(t: Tunnel, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, ws: WebSocket) -> None:

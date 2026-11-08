@@ -25,6 +25,8 @@ class Session:
     host_id: str | None
     websocket: WebSocket
     closed: bool = field(default=False)
+    #: Version announced in its hello: what the VPS may send it (fields it knows).
+    client_version: str = ""
 
     async def send(self, message) -> bool:
         if self.closed:

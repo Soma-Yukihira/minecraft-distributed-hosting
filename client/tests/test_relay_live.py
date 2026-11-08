@@ -370,3 +370,50 @@ def test_relay_survives_garbage(tmp_path, backend) -> None:
 
     asyncio.run(scenario())
 
+
+
+def test_paper_sees_the_players_real_address(tmp_path, backend) -> None:
+    """PROXY protocol (docs/ARCHITECTURE.md 4.22): Paper reads who connects, so IP bans work."""
+    async def scenario():
+        port = backend.relay_port
+        oscar, lea, sid = await two_pcs(tmp_path, backend, loader="paper")
+        await lea.close()
+        await oscar.api.start(sid)
+        await wait_state(oscar, sid, "running")
+        settings = oscar.layout.server_dir(sid) / "config" / "paper-global.yml"
+        assert "proxies:\n  proxy-protocol: true\n" in settings.read_text("utf-8")
+        assert await server_list(port, "mc.test") == "FAKE pc_oscar"   # pings carry the header too
+        alex = await join(port, "mc.test", "Alex")
+        assert isinstance(alex, Player) and await alex.echo(b"hi") == b"hi"
+        local_port = alex.writer.get_extra_info("sockname")[1]
+        await until(lambda: any(f"Alex[/127.0.0.1:{local_port}] logged in" in line
+                                for line in oscar.hosted.process.lines), what="Alex's own address in the log")
+        alex.close()
+        await oscar.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_banned_address_is_refused_by_the_hosting_pc(tmp_path, backend) -> None:
+    """Fabric cannot see who connects: the PC refuses the addresses of banned-ips.json itself."""
+    async def scenario():
+        port = backend.relay_port
+        oscar, lea, sid = await two_pcs(tmp_path, backend)          # Fabric
+        await lea.close()
+        await oscar.api.start(sid)
+        await wait_state(oscar, sid, "running")
+        alex = await join(port, "mc.test", "Alex", source="127.0.1.1")
+        assert isinstance(alex, Player)
+        await until(lambda: oscar.hosted.player_ips.get("alex") == "127.0.1.1", what="Alex's address known")
+        alex.close()
+        # What "ban-ip 127.0.1.1" leaves in Minecraft's list (with the PC's own address in front).
+        (oscar.layout.server_dir(sid) / "banned-ips.json").write_text(
+            json.dumps([{"ip": "127.0.1.1", "expires": "forever"}]), "utf-8")
+        assert await join(port, "mc.test", "Alex", source="127.0.1.1") == "Tu es banni de ce serveur."
+        assert await join(port, "mc.test", "Steve", source="127.0.1.1") == "Tu es banni de ce serveur."
+        other = await join(port, "mc.test", "Steve")                 # another address: fine
+        assert isinstance(other, Player) and await other.echo(b"ok") == b"ok"
+        other.close()
+        await oscar.close()
+
+    asyncio.run(scenario())

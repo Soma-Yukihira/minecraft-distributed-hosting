@@ -33,6 +33,8 @@ EVENT_LABELS = {
     "member_joined": "Un membre a rejoint le groupe",
     "member_updated": "Droits d'un membre modifiés",
     "member_removed": "Un membre a quitté le groupe",
+    "member_leaving": "Départ d'un membre qui héberge : le serveur change d'abord de PC",
+    "owner_transferred": "Le groupe a un nouveau propriétaire",
     "invite_created": "Invitation créée",
     "server_created": "Serveur créé",
     "server_updated": "Configuration du serveur modifiée",

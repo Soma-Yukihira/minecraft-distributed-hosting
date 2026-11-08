@@ -493,11 +493,27 @@ class MemberInfo(_Strict):
     role: Role
     can_host: bool
     hosts: list[HostInfo]
+    #: Removed, but their PC still hosts a server of the group: gone once it moved or stopped.
+    leaving: bool = False
 
 
 class MemberUpdate(_Strict):
     role: Role | None = None
     can_host: bool | None = None
+
+
+class OwnershipTransfer(_Strict):
+    """The owner hands the group over to another member (and becomes an admin)."""
+
+    user_id: Id
+    #: Asked again: handing a group over cannot be undone by the one who did it.
+    current_password: str = Field(min_length=1, max_length=256)
+
+
+class MemberRemoval(_Strict):
+    #: False: gone at once. True: their PC hosts a server of the group; the server first moves to
+    #: another PC (or stops), then the member is removed.
+    pending: bool
 
 
 class InviteCreate(_Strict):

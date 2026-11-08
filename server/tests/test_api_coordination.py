@@ -282,6 +282,71 @@ def test_startup_quarantine_after_control_plane_restart(world) -> None:
     assert h.post(world.oscar, f"/servers/{world.server_id}/failover/confirm").status_code == 200
 
 
+def start_on_lea(world, oscar_online: bool = True):
+    """Léa's PC hosts (Oscar's PC, if connected, can take over)."""
+    h = world.h
+    h.set_priority(world.oscar, world.server_id, world.pc_lea, 100)
+    h.set_priority(world.oscar, world.server_id, world.pc_oscar, 10)
+    pc_o = h.connect_host(world.oscar, world.pc_oscar) if oscar_online else None
+    pc_l = h.connect_host(world.lea, world.pc_lea)
+    assert h.post(world.oscar, f"/servers/{world.server_id}/start").status_code == 200
+    pc_l.accept_next_offer()
+    assert pc_l.report(world.server_id, "running").status_code == 204
+    return pc_o, pc_l
+
+
+def members(world) -> dict[str, dict]:
+    r = world.h.get(world.oscar, f"/groups/{world.group_id}/members")
+    return {m["username"]: m for m in r.json()}
+
+
+def test_removing_a_member_who_hosts_moves_the_server_first(world) -> None:
+    h = world.h
+    pc_o, pc_l = start_on_lea(world)
+    r = h.client.delete(f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}", headers=world.oscar.headers)
+    assert r.status_code == 200 and r.json() == {"pending": True}
+    # Still a member, no longer allowed to host; the server goes to Oscar's PC while players play on.
+    assert members(world)["lea"]["leaving"] is True and members(world)["lea"]["can_host"] is False
+    assert pc_o.expect("prefetch_request")["server_id"] == world.server_id
+    s = h.status(world.oscar, world.server_id)
+    assert s["state"] == "migrating" and s["migration"]["target_host_id"] == world.pc_oscar
+    # Rights of a leaving member cannot be given back meanwhile.
+    r = h.client.patch(f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}",
+                       headers=world.oscar.headers, json={"can_host": True})
+    assert r.status_code == 409
+    # Once her PC no longer holds the server, she is gone.
+    assert pc_l.release(world.server_id).status_code == 204
+    h.tick()
+    assert "lea" not in members(world)
+    assert h.get(world.lea, f"/servers/{world.server_id}").status_code == 404
+
+
+def test_a_leaving_host_with_nobody_to_take_over_stops_the_server(world) -> None:
+    h = world.h
+    _, pc_l = start_on_lea(world, oscar_online=False)
+    r = h.client.delete(f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}", headers=world.lea.headers)
+    assert r.json() == {"pending": True}  # she leaves by herself: same thing
+    assert pc_l.expect("stop_request")["server_id"] == world.server_id
+    s = h.status(world.oscar, world.server_id)
+    assert s["state"] == "stopping" and s["desired_running"] is False
+    h.tick()
+    assert "lea" in members(world)  # still hosting: not yet
+    pc_l.release(world.server_id)
+    h.tick()
+    assert "lea" not in members(world)
+
+
+def test_a_leaving_host_that_ignores_everything_loses_the_lease(world) -> None:
+    from mdh_server.coordination.service import DEPARTURE_DEADLINE_S
+
+    h = world.h
+    _, pc_l = start_on_lea(world, oscar_online=False)
+    h.client.delete(f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}", headers=world.oscar.headers)
+    assert pc_l.heartbeat()["leases"][0]["ok"] is True
+    h.advance(DEPARTURE_DEADLINE_S + 1)
+    assert pc_l.heartbeat()["leases"][0]["ok"] is False  # it must stop: its lease is gone
+
+
 def test_member_hosting_cannot_be_removed(world) -> None:
     h = world.h
     start_on_oscar(world)
@@ -334,5 +399,29 @@ def test_rights_and_servers_reach_the_members_applications_at_once(world) -> Non
     assert viewer.expect("group_update")["group_id"] == world.group_id
     # A member who is removed learns it too (no longer in the group's list).
     r = h.client.delete(f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}", headers=world.oscar.headers)
-    assert r.status_code == 204
+    assert r.status_code == 200 and r.json() == {"pending": False}
     assert viewer.expect("group_update")["group_id"] == world.group_id
+
+
+def test_a_vanished_host_does_not_hold_its_owners_departure_up(world) -> None:
+    """Its lease expired (the server is orphaned): that PC can no longer write, the member goes."""
+    h = world.h
+    _, pc_l = start_on_lea(world, oscar_online=False)
+    pc_l.close()
+    for _ in range(10):
+        h.advance(30)
+        h.tick()
+    assert h.status(world.oscar, world.server_id)["state"] == "orphaned"
+    r = h.client.delete(f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}", headers=world.oscar.headers)
+    assert r.json() == {"pending": False}
+    assert "lea" not in members(world)
+
+
+def test_removing_a_leaving_member_again_starts_nothing_new(world) -> None:
+    h = world.h
+    start_on_lea(world, oscar_online=False)
+    url = f"/api/v1/groups/{world.group_id}/members/{world.lea.user_id}"
+    assert h.client.delete(url, headers=world.oscar.headers).json() == {"pending": True}
+    assert h.client.delete(url, headers=world.lea.headers).json() == {"pending": True}
+    leaving = h.ctx.conn.execute("SELECT COUNT(*) FROM events WHERE type = 'member_leaving'").fetchone()[0]
+    assert leaving == 1

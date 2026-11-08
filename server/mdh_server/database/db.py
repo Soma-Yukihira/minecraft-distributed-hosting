@@ -210,6 +210,12 @@ MIGRATIONS: dict[int, list[str]] = {
         " UPDATE groups SET used_bytes = used_bytes - OLD.stored_size WHERE id = OLD.group_id;"
         " UPDATE groups SET used_bytes = used_bytes + NEW.stored_size WHERE id = NEW.group_id; END",
     ],
+    15: [
+        # A member removed (or leaving) while their PC hosts a server of the group: they stay a
+        # member until the server has moved to another PC, or stopped (docs/ARCHITECTURE.md 4.21).
+        "ALTER TABLE memberships ADD COLUMN leaving_at REAL",
+        "ALTER TABLE memberships ADD COLUMN leaving_by TEXT",
+    ],
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 

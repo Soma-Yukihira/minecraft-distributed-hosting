@@ -168,6 +168,15 @@ class ApiClient:
     async def update_member(self, group_id: str, user_id: str, **changes: Any) -> None:
         await self.request("PATCH", f"/groups/{group_id}/members/{user_id}", changes)
 
+    async def remove_member(self, group_id: str, user_id: str) -> bool:
+        """Remove a member, or leave (``user_id`` = oneself). True: pending, their PC hosts a
+        server of the group, which first moves to another PC or stops."""
+        return bool((await self.request("DELETE", f"/groups/{group_id}/members/{user_id}") or {}).get("pending"))
+
+    async def transfer_ownership(self, group_id: str, user_id: str, current_password: str) -> None:
+        await self.request("POST", f"/groups/{group_id}/owner",
+                           {"user_id": user_id, "current_password": current_password})
+
     # --- hosts ------------------------------------------------------------------------
     async def hosts(self) -> list[dict]:
         return await self.request("GET", "/hosts")
