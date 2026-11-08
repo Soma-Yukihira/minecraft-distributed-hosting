@@ -47,6 +47,16 @@ def test_offline_accounts_option_in_server_dialog(qapp, monkeypatch):
                "properties": {"white-list": False}, "allow_offline_accounts": False, "allowed_players": []}
     dlg = ServerConfigDialog(bridge, agent, current)
 
+    # The settings scroll, never taller than the screen; the wheel does not change a list it passes over.
+    assert dlg.height() <= dlg.screen().availableGeometry().height()
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    before = dlg.difficulty.currentIndex()
+    wheel = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120), Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(dlg.difficulty, wheel)
+    assert dlg.difficulty.currentIndex() == before and wheel.type() == QEvent.Type.Wheel
+
     # Refusing the warning leaves the option off.
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.StandardButton.No)
     dlg.offline.click()
@@ -338,7 +348,11 @@ def test_player_addresses_dialog(qapp, monkeypatch):
                           regenerate_player_address=lambda sid, player: _regen())
     dlg = PlayerAddressesDialog(SimpleNamespace(run=run), SimpleNamespace(api=api), "0" * 32)
     assert dlg.table.rowCount() == 2 and dlg.table.item(1, 1).text() == "mnopqrstuvwx.mc.example.org"
-    copy = next(b for b in dlg.table.cellWidget(0, 2).findChildren(QPushButton) if b.text() == "Copier")
+    # The buttons fit whole, without widening the window.
+    cell = dlg.table.cellWidget(0, 2)
+    assert dlg.table.columnWidth(2) >= cell.sizeHint().width()
+    assert dlg.table.rowHeight(0) >= cell.sizeHint().height()
+    copy =next(b for b in dlg.table.cellWidget(0, 2).findChildren(QPushButton) if b.text() == "Copier")
     copy.click()
     assert QApplication.clipboard().text() == "abcdefghijkl.mc.example.org"
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -254,6 +256,32 @@ class TemplateDialog(QDialog):
         self.accept()
 
 
+class _WheelScrollsThePage(QObject):
+    """A list or number under the mouse no longer changes when the page scrolls past it: the wheel
+    only changes a field that was clicked first."""
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel and isinstance(watched, QWidget) and not watched.hasFocus():
+            event.ignore()  # goes on to the scroll area
+            return True
+        return False
+
+
+def _wheel_scrolls_the_page(inner: QWidget) -> None:
+    guard = _WheelScrollsThePage(inner)
+    for field in [*inner.findChildren(QComboBox), *inner.findChildren(QSpinBox)]:
+        field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        field.installEventFilter(guard)
+
+
+def _fit_to_screen(dialog: QDialog, area: QScrollArea, inner: QWidget) -> None:
+    """As tall as its settings, but never taller than the screen: the rest scrolls."""
+    area.setMinimumWidth(inner.sizeHint().width() + area.verticalScrollBar().sizeHint().width())
+    around = dialog.sizeHint().height() - area.sizeHint().height()
+    available = dialog.screen().availableGeometry().height()
+    dialog.resize(dialog.sizeHint().width(), min(inner.sizeHint().height() + around, int(available * 0.85)))
+
+
 class ServerConfigDialog(QDialog):
     def __init__(self, bridge: Bridge, agent: HostAgent, current: dict[str, Any] | None,
                  parent: QWidget | None = None, defaults: dict[str, Any] | None = None) -> None:
@@ -268,7 +296,14 @@ class ServerConfigDialog(QDialog):
         self.other_properties = dict(props)
         self.world = WorldFields(props) if self.creating else None
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        # Many settings: they scroll, the buttons stay at the bottom of the window.
+        inner = QWidget()
+        form = QFormLayout(inner)
+        form.setContentsMargins(0, 0, 10, 0)  # room between the fields and the scroll bar
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.name = QLineEdit(current.get("name", "Survie"))
         self.loader = QComboBox()
         for label, value in (("Paper (recommandé : rapide, plugins)", "paper"),
@@ -426,7 +461,8 @@ class ServerConfigDialog(QDialog):
         form.addRow("Réveil", self.start_on_join)
         form.addRow("Mise en veille", self.stop_empty)
         form.addRow("Statut public", self.public_status)
-        layout.addLayout(form)
+        area.setWidget(inner)
+        layout.addWidget(area, 1)
         layout.addWidget(self.error)
         self.offline.clicked.connect(self._offline_clicked)
         self.personal.activated.connect(self._personal_chosen)
@@ -439,6 +475,8 @@ class ServerConfigDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        _wheel_scrolls_the_page(inner)
+        _fit_to_screen(self, area, inner)
         self.loader.currentIndexChanged.connect(self._load_versions)
         self._load_versions()
 
@@ -633,8 +671,10 @@ class PlayerAddressesDialog(QDialog):
         layout.addWidget(intro)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Joueur", "Adresse à saisir dans Minecraft", ""])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
@@ -652,6 +692,7 @@ class PlayerAddressesDialog(QDialog):
 
     def _fill(self, rows: list[dict[str, str]]) -> None:
         self.table.setRowCount(len(rows))
+        buttons = QSize()
         for i, row in enumerate(rows):
             self.table.setItem(i, 0, QTableWidgetItem(row["player"]))
             self.table.setItem(i, 1, QTableWidgetItem(row["address"]))
@@ -665,8 +706,28 @@ class PlayerAddressesDialog(QDialog):
             box.addWidget(copy)
             box.addWidget(renew)
             self.table.setCellWidget(i, 2, actions)
-        if not rows:
+            buttons = buttons.expandedTo(actions.sizeHint())
+        if rows:
+            self._fit(rows, buttons)
+        else:
             self.error.setText("Aucun joueur autorisé : ajoute les pseudos dans la configuration du serveur.")
+
+    def _fit(self, rows: list[dict[str, str]], buttons: QSize) -> None:
+        """Whole buttons, names and addresses, without having to widen the window."""
+        self.table.verticalHeader().setDefaultSectionSize(
+            max(self.table.verticalHeader().defaultSectionSize(), buttons.height() + 6))
+        self.table.setColumnWidth(2, buttons.width())
+        self.table.resizeColumnToContents(0)
+        metrics = self.table.fontMetrics()
+        address = max(metrics.horizontalAdvance(r["address"]) for r in rows) + 24
+        scrollbar = self.table.verticalScrollBar().sizeHint().width()
+        frame = 2 * self.table.frameWidth()
+        self.table.setMinimumWidth(self.table.columnWidth(0) + address + buttons.width() + scrollbar + frame)
+        shown = min(len(rows), 8)  # beyond, the table scrolls
+        self.table.setMinimumHeight(self.table.horizontalHeader().sizeHint().height() + frame
+                                    + shown * self.table.verticalHeader().defaultSectionSize())
+        hint = self.sizeHint()
+        self.resize(max(self.width(), hint.width()), max(self.height(), hint.height()))
 
     def _regenerate(self, player: str) -> None:
         answer = QMessageBox.question(self, "Nouvelle adresse",
