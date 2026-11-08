@@ -1,13 +1,12 @@
-# Every push to main (and by hand): the whole test suite on Windows, like the PCs of the group,
-# then known vulnerabilities in the dependencies. Nothing is built or published here.
+# By hand only (Actions > "Tests" > Run workflow): the whole test suite on Windows, then known
+# vulnerabilities in the dependencies. Nothing is built or published here.
 #
-# Windows minutes count double on a private repository: about 25 minutes per run.
+# The same checks run on the PC for free: deployment\scripts\check.ps1. Here, Windows minutes
+# count double on a private repository (about 25 minutes per run).
 name: Tests
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read

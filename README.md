@@ -377,6 +377,15 @@ py -3.12 -m venv .venv
 Les tests démarrent un véritable serveur central et de véritables agents, avec un serveur
 Minecraft simulé. La suite complète dure une dizaine de minutes.
 
+Avant de publier une version, la vérification complète (tests, puis recherche de vulnérabilités
+connues dans les dépendances avec `pip-audit`) se lance en une commande :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deployment\scripts\check.ps1
+```
+
+Le workflow GitHub « Tests » fait la même chose, mais seulement à la demande.
+
 ### Essai en local
 
 ```powershell
